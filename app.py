@@ -8,25 +8,32 @@ st.set_page_config(page_title="Roro's Subtitle Forge", layout="wide", page_icon=
 for key in ["m_res", "t_res", "s_res", "clean_res"]:
     if key not in st.session_state: st.session_state[key] = {} if "res" in key else None
 
-st.title("🎬 Roro's Subtitle Forge")
+st.title("🎬 Subtitle Forge")
 tabs = st.tabs(["🔗 Merger", "🤖 AI Translator", "⏱️ Quick Sync", "🧼 Sanitizer"])
 
-# --- TAB 1: MERGER ---
+# --- TAB 1: BATCH MERGER ---
 with tabs[0]:
     st.header("Batch Merger")
-    c1, c2, c3 = st.columns(3)
-    s_a = c1.number_input("Track A Shift (ms)", value=0, step=50)
-    s_b = c1.number_input("Track B Shift (ms)", value=0, step=50)
-    s_g = c2.number_input("Global Shift (ms)", value=0, step=50)
-    thresh = c2.number_input("Threshold (ms)", value=1000)
-    col_t = c3.selectbox("Color track?", ["None", "Track A", "Track B"], index=2)
-    hex_v = c3.color_picker("Color", "#FFFF54")
-    kw_b = st.text_input("Track B Keyword (e.g. FR)", value="FR")
+    
+    # 1. Configuration (The box you wanted back at the top)
+    with st.expander("⚙️ Configuration", expanded=True):
+        c1, c2, c3 = st.columns(3)
+        s_a = c1.number_input("Track A Shift (ms)", value=0, step=50)
+        s_b = c1.number_input("Track B Shift (ms)", value=0, step=50)
+        s_g = c2.number_input("Global Shift (ms)", value=0, step=50)
+        thresh = c2.number_input("Threshold (ms)", value=1000)
+        col_t = c3.selectbox("Color track?", ["None", "Track A", "Track B"], index=2)
+        hex_v = c3.color_picker("Color", "#FFFF54")
+    
+    # The Keyword input you circled
+    kw_b = st.text_input("Track B Keyword (e.g. FR)", value="DEMAND.fr")
     
     m_files = st.file_uploader("Upload Subtitles", accept_multiple_files=True, key="m_up")
+    
+    # 2. Process Button
     if st.button("🚀 Process Pairs", type="primary"):
         if m_files:
-            st.session_state.m_res = {}
+            st.session_state.m_res = {} # Clear previous results
             groups = {}
             for f in m_files:
                 code = extract_episode_code(f.name)
@@ -38,7 +45,6 @@ with tabs[0]:
                     with open(t_f1, "wb") as f: f.write(pair[0].getbuffer())
                     with open(t_f2, "wb") as f: f.write(pair[1].getbuffer())
                     
-                    # Normalize before processing
                     normalize_subtitle(t_f1, "clean1.srt")
                     normalize_subtitle(t_f2, "clean2.srt")
                     
@@ -47,13 +53,39 @@ with tabs[0]:
                     
                     out = f"Merged_{code}.srt"
                     merge_subtitles(ta, tb, out, thresh, hex_v, col_t, s_a, s_b, s_g)
-                    with open(out, "rb") as f: st.session_state.m_res[out] = f.read()
+                    
+                    with open(out, "rb") as f: 
+                        st.session_state.m_res[out] = f.read()
+                    
+                    # Cleanup
                     for tmp in [t_f1, t_f2, "clean1.srt", "clean2.srt", out]:
                         if os.path.exists(tmp): os.remove(tmp)
             st.rerun()
 
-    for name, data in st.session_state.m_res.items():
-        st.download_button(f"📥 {name}", data, file_name=name)
+    # 3. Results Section (Appears below the uploader)
+    if st.session_state.m_res:
+        st.divider()
+        st.subheader("✅ Processed Results")
+
+        # --- DOWNLOAD ALL BUTTON ---
+        zip_buffer = io.BytesIO()
+        with zipfile.ZipFile(zip_buffer, "w") as zf:
+            for name, data in st.session_state.m_res.items():
+                zf.writestr(name, data)
+        
+        st.download_button(
+            label="📥 Download All as ZIP",
+            data=zip_buffer.getvalue(),
+            file_name="merged_subtitles.zip",
+            mime="application/zip",
+            use_container_width=True
+        )
+        
+        # Individual downloads
+        for name, data in st.session_state.m_res.items():
+            col_n, col_d = st.columns([3, 1])
+            col_n.write(f"📄 {name}")
+            col_d.download_button("Download", data, file_name=name, key=f"dl_{name}")
 
 # --- TAB 2: AI TRANSLATOR ---
 with tabs[1]:
