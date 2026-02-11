@@ -1,34 +1,56 @@
-🎬 SubMerge Pro
+🎬 SubtitlesForge
 
-SubMerge Pro is a modular Python-based subtitle processor with a clean web interface. It allows you to batch-merge subtitle tracks (perfect for language learning or dual-language households), apply custom colors to specific tracks for better readability, and globally shift timestamps.
+SubtitlesForge is a comprehensive, modular Python-based subtitle toolkit. It is a full-featured suite for translating, syncing, and "cleaning" subtitle files with a clean, responsive Streamlit web interface.
+
 ✨ Features
+🔗 1. Batch Merger (Dual-Language)
 
-    Smart Batch Matching: Automatically pairs files using episode patterns (e.g., S01E01, 1x05) so you can upload an entire season at once.
+    Smart Matching: Automatically pairs files using episode patterns (e.g., S01E01, 1x05).
 
-    Dual-Language Merging: Combines two tracks into one file, matching cues based on a configurable millisecond threshold.
+    Dual-Track Logic: Combines two languages into one file, matching cues based on a configurable millisecond threshold.
 
-    HTML Coloring: Applies <font> tags to the secondary track, ensuring compatibility with most modern players (VLC, Plex, MPC-HC).
+    HTML Coloring: Applies <font> tags to specific tracks to distinguish languages (ideal for VLC, Plex, and MPC-HC).
 
-    Global Time Shifter: Shift all timestamps forward or backward to fix sync issues before merging.
+🤖 2. AI Translator
 
-    Web Interface: Drag-and-drop UI powered by Streamlit.
+    Local LLM Integration: Connects to LM Studio (or any OpenAI-compatible API) to translate subtitles using models like Llama 3 or Mistral.
 
-    Zip Export: Process dozens of files and download them all in a single compressed archive.
+    Context-Aware: Provide IMDB summaries or plot descriptions to help the AI maintain tone and gender-correct translations.
+
+    Live Preview: Watch the translation happen line-by-line with a side-by-side comparison.
+
+⏱️ 3. Quick Sync & Drift Fix
+
+    Global Shifting: Apply millisecond offsets (positive or negative) to fix static delays.
+
+    Linear Drift Calculator: Fix subtitles that start synced but slowly drift out of time by calculating the exact speed factor (FPS ratio) between two points.
+
+🧼 4. Subtitle Sanitizer
+
+    Encoding Fixer: Automatically detects and converts "corrupt" encodings (like Western Windows-1252) into standard UTF-8.
+
+    Ad-Stripping: Removes common promotional spam from groups like YIFY or OpenSubtitles.
+
+    HI Tag Removal: Strips Hearing Impaired descriptions like [Banging on door] or (Sighs).
+
+    Bulk Regex: Use custom Find/Replace logic across multiple files simultaneously.
 
 🛠️ Tech Stack
 
     Language: Python 3.12+
 
-    Package Manager: uv (Extremely fast Rust-based manager)
+    Package Manager: uv
 
-    Logic Engine: pysubs2
+    Subtitle Logic: pysubs2
+
+    Encoding Detection: charset-normalizer
 
     Frontend: Streamlit
 
 🚀 Getting Started
 1. Prerequisites
 
-Ensure you have uv installed. If not, run:
+Ensure you have uv installed:
 Bash
 
 # Windows
@@ -39,41 +61,41 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 
 2. Installation
 
-Clone this repository or move into your project folder and sync the environment:
+Clone the repository and sync the environment:
 Bash
 
 uv sync
 
 3. Running the App
-
-Launch the web interface using:
 Bash
 
 uv run streamlit run app.py
 
-📖 How to Use
+📖 Module Breakdown
+The Tabs
 
-    Adjust Settings: Use the sidebar to set your merge threshold (default 1000ms) and choose which track to color.
+    Merger: Upload two sets of subtitles. Enter a "Track B Keyword" (e.g., FR) so the app knows which language to color and place on the bottom.
 
-    Pick Color: Select your preferred highlight color (e.g., Yellow #FFFF54).
+    AI Translator: Ensure your LM Studio server is running. Paste your local URL (default: http://localhost:1234/v1) and choose your model.
 
-    Identify Track B: Enter a keyword found in your secondary subtitle filenames (e.g., FR, French, SDH).
+    Quick Sync: If a movie starts fine but ends 2 seconds late, use the Drift Calculator to find your new Speed Factor.
 
-    Upload: Drag and drop all .srt or .ass files for the season into the upload box.
+    Sanitizer: Use this as a "pre-processor" to ensure all your files are clean UTF-8 before merging or translating.
 
-    Process: Click Process & Merge.
-
-    Download: Download individual files or the complete ZIP archive.
-
-📁 Project Structure
+File Structure
 Plaintext
 
-├── .venv/               # Virtual environment (managed by uv)
-├── app.py               # Streamlit web interface
-├── sub_engine.py        # Modular logic (merging, shifting, matching)
-├── pyproject.toml       # Project dependencies and metadata
-└── README.md            # You are here!
+├── app.py              # Streamlit UI & Session State management
+├── sub_engine.py       # Core logic (Merging, AI translation, Sanitization)
+├── pyproject.toml      # Dependencies (pysubs2, requests, streamlit, etc.)
+└── README.md           # Documentation
 
 🔧 Modular Logic
 
-The sub_engine.py is designed to be imported into other scripts. You can use the shift_subtitles or merge_subtitles functions independently for command-line automation.
+The sub_engine.py is designed to be headless. You can import its functions into your own CLI scripts:
+
+    normalize_subtitle(): Standardizes encoding to UTF-8.
+
+    translate_subs(): A generator function for AI-based batch translation.
+
+    merge_subtitles(): Handles the heavy lifting of timestamp matching and color injection.
