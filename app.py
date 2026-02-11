@@ -2,13 +2,13 @@ import streamlit as st
 import os, zipfile, io, pysubs2
 from sub_engine import merge_subtitles, extract_episode_code, translate_subs, shift_subtitles, normalize_subtitle
 
-st.set_page_config(page_title="Roro's Subtitle Forge", layout="wide", page_icon="🎬")
+st.set_page_config(page_title="Subtitle Forge", layout="wide", page_icon="🎬")
 
 # Session State Initialization
 for key in ["m_res", "t_res", "s_res", "clean_res"]:
     if key not in st.session_state: st.session_state[key] = {} if "res" in key else None
 
-st.title("🎬 Roro's Subtitle Forge")
+st.title("🎬 Subtitle Forge")
 tabs = st.tabs(["🔗 Merger", "🤖 AI Translator", "⏱️ Quick Sync", "🧼 Sanitizer"])
 
 # --- TAB 1: MERGER ---
@@ -24,8 +24,8 @@ with tabs[0]:
         thresh = c2.number_input("Threshold (ms)", value=1000)
         col_t = c3.selectbox("Color track?", ["None", "Track A", "Track B"], index=2)
         hex_v = c3.color_picker("Color", "#FFFF54")
+        kw_b = st.text_input("Track B Keyword (e.g. FR)", value="")
     
-    kw_b = st.text_input("Track B Keyword (e.g. DEMAND.fr)", value="DEMAND.fr")
     m_files = st.file_uploader("Upload Subtitles", accept_multiple_files=True, key="m_up")
     
     if st.button("🚀 Process Pairs", type="primary"):
@@ -56,11 +56,11 @@ with tabs[0]:
                         if os.path.exists(tmp): os.remove(tmp)
             st.rerun()
 
-    # Results Section
+# Results Section
     if st.session_state.m_res:
         st.divider()
         
-        # Download All as ZIP at the top of results
+        # 1. Download All (ZIP)
         zip_buffer = io.BytesIO()
         with zipfile.ZipFile(zip_buffer, "w") as zf:
             for name, data in st.session_state.m_res.items():
@@ -70,10 +70,37 @@ with tabs[0]:
             "📥 Download All (ZIP)", 
             zip_buffer.getvalue(), 
             file_name="merged_subtitles.zip", 
-            use_container_width=True,
-            type="secondary"
+            use_container_width=True
         )
-        
+
+        # 2. Preview Feature
+        st.subheader("🔍 Quality Control")
+        preview_choice = st.selectbox(
+            "Select a file to inspect for encoding/sync:",
+            options=list(st.session_state.m_res.keys())
+        )
+
+        if preview_choice:
+            # Get binary data from session state
+            binary_data = st.session_state.m_res[preview_choice]
+            
+            # Explicitly decode as UTF-8 for the preview
+            try:
+                raw_text = binary_data.decode('utf-8')
+            except UnicodeDecodeError:
+                # Fallback just for display purposes
+                raw_text = binary_data.decode('latin-1', errors='replace')
+            
+            # Show the first 40 lines (enough to get past the SRT header)
+            lines = raw_text.splitlines()
+            preview_snippet = "\n".join(lines[:40]) 
+            
+            st.info(f"Showing preview of: {preview_choice}")
+            st.code(preview_snippet, language="markdown")
+
+        st.divider()
+
+        # 3. Individual Downloads
         for name, data in st.session_state.m_res.items():
             col_n, col_d = st.columns([3, 1])
             col_n.write(f"📄 {name}")
@@ -109,38 +136,115 @@ with tabs[1]:
 
 # --- TAB 3: QUICK SYNC ---
 with tabs[2]:
-    st.header("Sync & Drift Fix")
+    st.header("⏱️ Sync & Drift Fix")
+    
+    with st.expander("🧮 Drift Calculator", expanded=False):
+        st.write("If the start is synced but the end is off, use this:")
+        c1, c2 = st.columns(2)
+        actual_time = c1.text_input("Actual time of last line (MM:SS.ms)", "00:00.000")
+        current_time = c2.text_input("Current time of last line (MM:SS.ms)", "00:00.000")
+        if st.button("Calculate Speed Factor"):
+            def to_ms(t_str):
+                m, s = t_str.split(':')
+                return (int(m) * 60 + float(s)) * 1000
+            try:
+                factor = to_ms(actual_time) / to_ms(current_time)
+                st.info(f"Suggested Speed Factor: **{factor:.4f}**")
+            except: st.error("Format error. Use MM:SS.ms")
+
+    st.divider()
     c_s, c_d = st.columns(2)
-    sh, sp = c_s.number_input("Shift (ms)", 0, step=50), c_d.number_input("Speed Factor", 1.0, format="%.4f", step=0.001)
-    file_s = st.file_uploader("Upload to Fix", key="sync_up")
-    if st.button("⚡ Apply") and file_s:
-        with open("raw_s.srt", "wb") as f: f.write(file_s.getbuffer())
-        normalize_subtitle("raw_s.srt", "clean_s.srt")
-        subs = pysubs2.load("clean_s.srt", encoding="utf-8")
+    sh = c_s.number_input("Global Shift (ms)", value=0, step=50, help="Positive = Later, Negative = Earlier")
+    sp = c_d.number_input("Speed Factor / FPS Ratio", 0.5, 2.0, 1.0, format="%.4f", step=0.001)
+    
+    file_s = st.file_uploader("Upload Subtitles to Sync", key="sync_up")
+    
+    if st.button("⚡ Apply Sync", type="primary") and file_s:
+        with open("temp_sync.srt", "wb") as f: f.write(file_s.getbuffer())
+        normalize_subtitle("temp_sync.srt", "temp_clean.srt")
+        
+        subs = pysubs2.load("temp_clean.srt", encoding="utf-8")
         shift_subtitles(subs, sh, sp)
-        st.session_state.s_res = {"n": f"Fixed_{file_s.name}", "d": subs.to_string(format_="srt")}
+        
+        st.session_state.s_res = {
+            "n": f"Synced_{file_s.name}", 
+            "d": subs.to_string(format_="srt")
+        }
+        os.remove("temp_sync.srt"); os.remove("temp_clean.srt")
+
     if st.session_state.s_res:
-        st.download_button("📥 Download", st.session_state.s_res['d'], file_name=st.session_state.s_res['n'])
+        st.success(f"Applied: {sh}ms shift at {sp}x speed.")
+        st.download_button("📥 Download Synced File", st.session_state.s_res['d'], file_name=st.session_state.s_res['n'])
 
 # --- TAB 4: SANITIZER ---
 with tabs[3]:
     st.header("🧼 Subtitle Sanitizer")
-    st.write("Upload any file to instantly convert it to clean UTF-8 SRT with standard formatting.")
-    clean_files = st.file_uploader("Upload Subtitles to Clean", accept_multiple_files=True, key="clean_up")
+    st.write("Clean encoding, remove advertisements, and strip hearing-impaired tags.")
     
-    if st.button("🧼 Clean Files", type="primary"):
+    with st.expander("🛠️ Cleaning Options", expanded=True):
+        col_c1, col_c2 = st.columns(2)
+        rem_ads = col_c1.checkbox("Remove Ads (e.g., OpenSubtitles, YIFY)", value=True)
+        rem_hi = col_c2.checkbox("Strip Hearing Impaired Tags (e.g., [Sighs])", value=False)
+        find_text = st.text_input("Custom Find (Regex supported)", "")
+        replace_text = st.text_input("Custom Replace", "")
+
+    clean_files = st.file_uploader("Upload Subtitles", accept_multiple_files=True, key="clean_up")
+    
+    if st.button("🧼 Run Sanitizer", type="primary"):
         if clean_files:
             results = {}
             for f in clean_files:
-                with open("raw_clean.srt", "wb") as tmp: tmp.write(f.getbuffer())
-                normalize_subtitle("raw_clean.srt", "fixed.srt")
-                with open("fixed.srt", "rb") as fixed: results[f"Clean_{f.name}"] = fixed.read()
+                # Save temp and normalize
+                temp_raw = f"raw_{f.name}"
+                temp_fixed = f"fixed_{f.name}"
+                with open(temp_raw, "wb") as tmp: tmp.write(f.getbuffer())
+                
+                normalize_subtitle(temp_raw, temp_fixed)
+                subs = pysubs2.load(temp_fixed, encoding="utf-8")
+                
+                # --- Cleaning Logic ---
+                new_lines = []
+                # Common patterns for subtitle ads
+                ad_patterns = [r"subtitles? by", r"corrected by", r"www\.", r"\.com", r"opensubtitles"]
+                
+                for line in subs:
+                    # 1. Remove HI tags: [Text] or (Text)
+                    if rem_hi:
+                        line.text = re.sub(r"\[.*?\]|\(.*?\)", "", line.text).strip()
+                    
+                    # 2. Custom Find/Replace
+                    if find_text:
+                        line.text = re.sub(find_text, replace_text, line.text)
+                    
+                    # 3. Ad Removal
+                    is_ad = any(re.search(p, line.text, re.IGNORECASE) for p in ad_patterns) if rem_ads else False
+                    
+                    if line.text and not is_ad:
+                        new_lines.append(line)
+                
+                subs.lines = new_lines
+                subs.save(temp_fixed, encoding="utf-8")
+                
+                with open(temp_fixed, "rb") as res:
+                    results[f"Clean_{f.name}"] = res.read()
+                
+                # Local cleanup
+                for t in [temp_raw, temp_fixed]: 
+                    if os.path.exists(t): os.remove(t)
+            
             st.session_state.clean_res = results
             st.rerun()
 
+    # Results Section (ZIP and List)
     if st.session_state.clean_res:
         st.divider()
+        zip_buf = io.BytesIO()
+        with zipfile.ZipFile(zip_buf, "w") as zf:
+            for n, d in st.session_state.clean_res.items(): zf.writestr(n, d)
+        
+        st.download_button("📥 Download All Sanitized (ZIP)", zip_buf.getvalue(), "cleaned_subs.zip", use_container_width=True)
+        
         for name, data in st.session_state.clean_res.items():
-            col_n, col_d = st.columns([3, 1])
-            col_n.write(f"✅ {name}")
-            col_d.download_button("Download", data, file_name=name, key=f"clean_dl_{name}")
+            cn, cd = st.columns([3, 1])
+            cn.success(f"Fixed: {name}")
+            cd.download_button("Download", data, file_name=name, key=f"dl_c_{name}")

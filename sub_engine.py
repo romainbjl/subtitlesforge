@@ -6,19 +6,42 @@ from charset_normalizer import detect
 
 def normalize_subtitle(input_path, output_path):
     """
-    Standardizes any subtitle to a clean UTF-8 SRT file.
+    Forcefully standardizes subtitles to UTF-8. 
+    Specifically targets the 'é' -> 'ť' corruption by prioritizing 
+    Western European maps.
     """
-    # 1. Detect the original encoding
     with open(input_path, "rb") as f:
         raw_data = f.read()
         prediction = detect(raw_data)
-        # Higher confidence threshold for detection
-        encoding = prediction.get('encoding') if prediction.get('confidence') > 0.5 else 'latin-1'
+        detected_enc = prediction.get('encoding')
+        confidence = prediction.get('confidence', 0)
 
-    # 2. Load it correctly
-    subs = pysubs2.load(input_path, encoding=encoding)
+    # List of encodings to try in order of likelihood for French/Western subs
+    # cp1252 (Windows-1252) is the most common culprit for the 'ť' error
+    encodings_to_try = [detected_enc, 'utf-8', 'cp1252', 'latin-1', 'windows-1252']
     
-    # 3. Explicitly save as UTF-8 (no BOM) to fix é, à, ç characters
+    subs = None
+    for enc in encodings_to_try:
+        if not enc: continue
+        try:
+            subs = pysubs2.load(input_path, encoding=enc)
+            # Check if the text actually contains common corruption patterns
+            # If we see 'ť' where we expect 'é', we try the next encoding
+            test_text = "".join([l.text for l in subs[:10]])
+            if 'ť' in test_text or 'Ť' in test_text:
+                continue 
+            break # Success!
+        except:
+            continue
+
+    if subs is None:
+        # Final fallback
+        subs = pysubs2.load(input_path, encoding='latin-1')
+
+    # Standardize internal line breaks
+    for line in subs:
+        line.text = line.text.replace("\r\n", "\n").replace("\r", "\n")
+        
     subs.save(output_path, encoding="utf-8")
     return output_path
 
@@ -86,28 +109,26 @@ def merge_subtitles(path_a, path_b, output_path, threshold_ms=1000,
                     color_hex="#ffff54", color_track="Track B",
                     shift_a=0, shift_b=0, shift_global=0):
     
-    # Force UTF-8 loading
+    # Normalized files are now GUARANTEED UTF-8
     subs_a = pysubs2.load(path_a, encoding="utf-8")
     subs_b = pysubs2.load(path_b, encoding="utf-8")
 
     shift_subtitles(subs_a, shift_a)
     shift_subtitles(subs_b, shift_b)
 
-    # Apply color using standard SRT tags (using f-strings for clarity)
+    # Apply color tags
     if color_track == "Track A":
-        for line in subs_a: line.text = f'<font color="{color_hex}">{line.text}</font>'
+        for line in subs_a: line.text = f'<font color="{color_hex}">{line.text.strip()}</font>'
     elif color_track == "Track B":
-        for line in subs_b: line.text = f'<font color="{color_hex}">{line.text}</font>'
+        for line in subs_b: line.text = f'<font color="{color_hex}">{line.text.strip()}</font>'
 
     # Merge Logic
     for line_b in subs_b:
         matched = False
-        text_b = str(line_b.text).strip() # Force string conversion
-        
         for line_a in subs_a:
             if abs(line_a.start - line_b.start) <= threshold_ms:
-                # Ensure we use a clean newline and string concatenation
-                line_a.text = f"{line_a.text}\n{text_b}"
+                # Use a clean separator to avoid clumping
+                line_a.text = f"{line_a.text.strip()}\n{line_b.text.strip()}"
                 matched = True
                 break
         if not matched:
@@ -115,6 +136,5 @@ def merge_subtitles(path_a, path_b, output_path, threshold_ms=1000,
 
     shift_subtitles(subs_a, shift_global)
     subs_a.sort()
-    
-    # Save with specific encoding to ensure French characters are preserved
+    # Save as UTF-8 WITHOUT BOM (Streamlit and most players prefer this)
     subs_a.save(output_path, encoding="utf-8")
