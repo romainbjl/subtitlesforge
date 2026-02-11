@@ -1,0 +1,16 @@
+# Python environment and cache
+.venv/
+__pycache__/
+*.pyc
+
+# Temporary subtitle files (Crucial!)
+temp_a.srt
+temp_b.srt
+*.srt
+
+# Local environment settings
+.python-version
+
+# OS generated files
+.DS_Store
+Thumbs.db
