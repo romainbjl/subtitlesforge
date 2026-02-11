@@ -6,19 +6,19 @@
 
 ### 🔗 1. Batch Merger (Dual-Language)
 Automatically pairs files using episode patterns and combines two tracks into one with custom coloring.
-![Batch Merger Interface](https://github.com/user-attachments/assets/39eec33c-0ec5-405e-b7b6-227e6b050a65)
+![Batch Merger Interface](https://github.com/user-attachments/assets/810b39d0-0e3f-4fbd-ba3d-5fba69f75ed7)
 
 ### 🤖 2. AI Translator
 Translates subtitles via local LLMs (LM Studio) with a live side-by-side quality preview.
-![AI Translator Interface](https://github.com/user-attachments/assets/db84b9e4-fb5a-4157-8285-6b0f7c9af6a3)
+![AI Translator Interface](https://github.com/user-attachments/assets/1d50491d-0397-4369-9859-189fa7516cbf)
 
 ### ⏱️ 3. Quick Sync & Drift Fix
 Apply global shifts or use the Drift Calculator to fix subtitles that desync over time.
-![Quick Sync Interface](https://github.com/user-attachments/assets/8e4133d2-4371-4a15-96d1-50b3ac23746d)
+![Quick Sync Interface](https://github.com/user-attachments/assets/1bac3a5e-0698-4b1e-91f8-2309961a262a)
 
 ### 🧼 4. Subtitle Sanitizer
 Standardize encodings to UTF-8, strip ads, and remove hearing-impaired tags in bulk.
-![Subtitle Sanitizer Interface](https://github.com/user-attachments/assets/401da32e-2815-48d7-9cae-e6bd4e5e100a)
+![Subtitle Sanitizer Interface](https://github.com/user-attachments/assets/746138c1-ffa5-4bb5-a143-ae7b3ef488a6)
 
 ## 🛠️ Tech Stack
 
