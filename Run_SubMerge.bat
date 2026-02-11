@@ -3,6 +3,9 @@ title SubMerge Pro Launcher
 echo Starting SubMerge Pro...
 echo.
 
+:: Move to the directory where this .bat file lives
+cd /d "%~dp0"
+
 :: Check if uv is installed
 where uv >nul 2>nul
 if %errorlevel% neq 0 (
@@ -13,6 +16,7 @@ if %errorlevel% neq 0 (
 )
 
 :: Run the streamlit app using uv
-uv run streamlit run app.py --server.headless false
+:: We use "%~dp0app.py" to give uv the absolute, un-renameable path
+uv run streamlit run "%~dp0app.py" --server.headless false
 
 pause
