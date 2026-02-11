@@ -6,19 +6,19 @@ from charset_normalizer import detect
 
 def normalize_subtitle(input_path, output_path):
     """
-    The 'Subtitle Hospital': Fixes encoding, line endings, and 
-    standardizes formatting to UTF-8 SRT.
+    Standardizes any subtitle to a clean UTF-8 SRT file.
     """
-    # 1. Detect Encoding
+    # 1. Detect the original encoding
     with open(input_path, "rb") as f:
         raw_data = f.read()
         prediction = detect(raw_data)
-        encoding = prediction.get('encoding') or 'latin-1'
+        # Higher confidence threshold for detection
+        encoding = prediction.get('encoding') if prediction.get('confidence') > 0.5 else 'latin-1'
 
-    # 2. Load and sanitize
+    # 2. Load it correctly
     subs = pysubs2.load(input_path, encoding=encoding)
     
-    # 3. Force save as clean UTF-8 SRT
+    # 3. Explicitly save as UTF-8 (no BOM) to fix é, à, ç characters
     subs.save(output_path, encoding="utf-8")
     return output_path
 
@@ -86,27 +86,35 @@ def merge_subtitles(path_a, path_b, output_path, threshold_ms=1000,
                     color_hex="#ffff54", color_track="Track B",
                     shift_a=0, shift_b=0, shift_global=0):
     
-    # We assume paths are already normalized to UTF-8 before this call
+    # Force UTF-8 loading
     subs_a = pysubs2.load(path_a, encoding="utf-8")
     subs_b = pysubs2.load(path_b, encoding="utf-8")
 
     shift_subtitles(subs_a, shift_a)
     shift_subtitles(subs_b, shift_b)
 
+    # Apply color using standard SRT tags (using f-strings for clarity)
     if color_track == "Track A":
         for line in subs_a: line.text = f'<font color="{color_hex}">{line.text}</font>'
     elif color_track == "Track B":
         for line in subs_b: line.text = f'<font color="{color_hex}">{line.text}</font>'
 
+    # Merge Logic
     for line_b in subs_b:
         matched = False
+        text_b = str(line_b.text).strip() # Force string conversion
+        
         for line_a in subs_a:
             if abs(line_a.start - line_b.start) <= threshold_ms:
-                line_a.text += f"\n{line_b.text}"
+                # Ensure we use a clean newline and string concatenation
+                line_a.text = f"{line_a.text}\n{text_b}"
                 matched = True
                 break
-        if not matched: subs_a.append(line_b)
+        if not matched:
+            subs_a.append(line_b)
 
     shift_subtitles(subs_a, shift_global)
     subs_a.sort()
+    
+    # Save with specific encoding to ensure French characters are preserved
     subs_a.save(output_path, encoding="utf-8")

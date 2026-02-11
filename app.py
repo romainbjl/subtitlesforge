@@ -4,18 +4,18 @@ from sub_engine import merge_subtitles, extract_episode_code, translate_subs, sh
 
 st.set_page_config(page_title="Roro's Subtitle Forge", layout="wide", page_icon="🎬")
 
-# Session State
+# Session State Initialization
 for key in ["m_res", "t_res", "s_res", "clean_res"]:
     if key not in st.session_state: st.session_state[key] = {} if "res" in key else None
 
-st.title("🎬 Subtitle Forge")
+st.title("🎬 Roro's Subtitle Forge")
 tabs = st.tabs(["🔗 Merger", "🤖 AI Translator", "⏱️ Quick Sync", "🧼 Sanitizer"])
 
-# --- TAB 1: BATCH MERGER ---
+# --- TAB 1: MERGER ---
 with tabs[0]:
     st.header("Batch Merger")
     
-    # 1. Configuration (The box you wanted back at the top)
+    # Inputs at the top
     with st.expander("⚙️ Configuration", expanded=True):
         c1, c2, c3 = st.columns(3)
         s_a = c1.number_input("Track A Shift (ms)", value=0, step=50)
@@ -25,15 +25,12 @@ with tabs[0]:
         col_t = c3.selectbox("Color track?", ["None", "Track A", "Track B"], index=2)
         hex_v = c3.color_picker("Color", "#FFFF54")
     
-    # The Keyword input you circled
-    kw_b = st.text_input("Track B Keyword (e.g. FR)", value="DEMAND.fr")
-    
+    kw_b = st.text_input("Track B Keyword (e.g. DEMAND.fr)", value="DEMAND.fr")
     m_files = st.file_uploader("Upload Subtitles", accept_multiple_files=True, key="m_up")
     
-    # 2. Process Button
     if st.button("🚀 Process Pairs", type="primary"):
         if m_files:
-            st.session_state.m_res = {} # Clear previous results
+            st.session_state.m_res = {}
             groups = {}
             for f in m_files:
                 code = extract_episode_code(f.name)
@@ -41,47 +38,42 @@ with tabs[0]:
             
             for code, pair in groups.items():
                 if len(pair) == 2:
-                    t_f1, t_f2 = ("raw1.srt", "raw2.srt")
-                    with open(t_f1, "wb") as f: f.write(pair[0].getbuffer())
-                    with open(t_f2, "wb") as f: f.write(pair[1].getbuffer())
+                    with open("r1.srt", "wb") as f: f.write(pair[0].getbuffer())
+                    with open("r2.srt", "wb") as f: f.write(pair[1].getbuffer())
                     
-                    normalize_subtitle(t_f1, "clean1.srt")
-                    normalize_subtitle(t_f2, "clean2.srt")
+                    normalize_subtitle("r1.srt", "c1.srt")
+                    normalize_subtitle("r2.srt", "c2.srt")
                     
-                    if kw_b.lower() in pair[0].name.lower(): ta, tb = "clean2.srt", "clean1.srt"
-                    else: ta, tb = "clean1.srt", "clean2.srt"
+                    # Track logic
+                    if kw_b.lower() in pair[0].name.lower(): ta, tb = "c2.srt", "c1.srt"
+                    else: ta, tb = "c1.srt", "c2.srt"
                     
                     out = f"Merged_{code}.srt"
                     merge_subtitles(ta, tb, out, thresh, hex_v, col_t, s_a, s_b, s_g)
+                    with open(out, "rb") as f: st.session_state.m_res[out] = f.read()
                     
-                    with open(out, "rb") as f: 
-                        st.session_state.m_res[out] = f.read()
-                    
-                    # Cleanup
-                    for tmp in [t_f1, t_f2, "clean1.srt", "clean2.srt", out]:
+                    for tmp in ["r1.srt", "r2.srt", "c1.srt", "c2.srt", out]:
                         if os.path.exists(tmp): os.remove(tmp)
             st.rerun()
 
-    # 3. Results Section (Appears below the uploader)
+    # Results Section
     if st.session_state.m_res:
         st.divider()
-        st.subheader("✅ Processed Results")
-
-        # --- DOWNLOAD ALL BUTTON ---
+        
+        # Download All as ZIP at the top of results
         zip_buffer = io.BytesIO()
         with zipfile.ZipFile(zip_buffer, "w") as zf:
             for name, data in st.session_state.m_res.items():
                 zf.writestr(name, data)
         
         st.download_button(
-            label="📥 Download All as ZIP",
-            data=zip_buffer.getvalue(),
-            file_name="merged_subtitles.zip",
-            mime="application/zip",
-            use_container_width=True
+            "📥 Download All (ZIP)", 
+            zip_buffer.getvalue(), 
+            file_name="merged_subtitles.zip", 
+            use_container_width=True,
+            type="secondary"
         )
         
-        # Individual downloads
         for name, data in st.session_state.m_res.items():
             col_n, col_d = st.columns([3, 1])
             col_n.write(f"📄 {name}")
