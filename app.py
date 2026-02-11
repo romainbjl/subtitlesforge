@@ -1,160 +1,122 @@
 import streamlit as st
-import os
-import zipfile
-import io
-import pysubs2
-from sub_engine import merge_subtitles, extract_episode_code, translate_subs, shift_subtitles
+import os, zipfile, io, pysubs2
+from sub_engine import merge_subtitles, extract_episode_code, translate_subs, shift_subtitles, normalize_subtitle
 
 st.set_page_config(page_title="Roro's Subtitle Forge", layout="wide", page_icon="🎬")
 
-# --- Session State Initialization ---
-if "merged_results" not in st.session_state: st.session_state.merged_results = {}
-if "translated_result" not in st.session_state: st.session_state.translated_result = None
-if "shifted_result" not in st.session_state: st.session_state.shifted_result = None
+# Session State
+for key in ["m_res", "t_res", "s_res", "clean_res"]:
+    if key not in st.session_state: st.session_state[key] = {} if "res" in key else None
 
-st.title("🎬 Subtitle Forge")
+st.title("🎬 Roro's Subtitle Forge")
+tabs = st.tabs(["🔗 Merger", "🤖 AI Translator", "⏱️ Quick Sync", "🧼 Sanitizer"])
 
-tabs = st.tabs(["🔗 Merger & Sync", "🤖 AI Translator", "⏱️ Quick Shift & Drift"])
-
-# --- TAB 1: BATCH MERGER ---
+# --- TAB 1: MERGER ---
 with tabs[0]:
-    st.header("Batch Merge & Sync")
+    st.header("Batch Merger")
+    c1, c2, c3 = st.columns(3)
+    s_a = c1.number_input("Track A Shift (ms)", value=0, step=50)
+    s_b = c1.number_input("Track B Shift (ms)", value=0, step=50)
+    s_g = c2.number_input("Global Shift (ms)", value=0, step=50)
+    thresh = c2.number_input("Threshold (ms)", value=1000)
+    col_t = c3.selectbox("Color track?", ["None", "Track A", "Track B"], index=2)
+    hex_v = c3.color_picker("Color", "#FFFF54")
+    kw_b = st.text_input("Track B Keyword (e.g. FR)", value="FR")
     
-    with st.expander("⚙️ Configuration", expanded=True):
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            s_a = st.number_input("Track A Shift (ms)", value=0, step=50)
-            s_b = st.number_input("Track B Shift (ms)", value=0, step=50)
-        with c2:
-            s_g = st.number_input("Global Shift (ms)", value=0, step=50)
-            threshold = st.number_input("Merge Threshold (ms)", value=1000)
-        with c3:
-            color_track = st.selectbox("Color track?", ["None", "Track A", "Track B"], index=2)
-            picked_hex = st.color_picker("Color", "#FFFF54")
-            track_b_kw = st.text_input("Track B Keyword", value="FR")
-
-    files = st.file_uploader("Upload pairs of subtitles", accept_multiple_files=True, key="m_up")
-
-    if st.button("🚀 Process & Merge", type="primary"):
-        if files:
-            st.session_state.merged_results = {}
+    m_files = st.file_uploader("Upload Subtitles", accept_multiple_files=True, key="m_up")
+    if st.button("🚀 Process Pairs", type="primary"):
+        if m_files:
+            st.session_state.m_res = {}
             groups = {}
-            for f in files:
+            for f in m_files:
                 code = extract_episode_code(f.name)
                 groups.setdefault(code, []).append(f)
             
             for code, pair in groups.items():
                 if len(pair) == 2:
-                    # Identify files
-                    if track_b_kw.lower() in pair[0].name.lower():
-                        tb_f, ta_f = pair[0], pair[1]
-                    else:
-                        ta_f, tb_f = pair[0], pair[1]
+                    t_f1, t_f2 = ("raw1.srt", "raw2.srt")
+                    with open(t_f1, "wb") as f: f.write(pair[0].getbuffer())
+                    with open(t_f2, "wb") as f: f.write(pair[1].getbuffer())
                     
-                    with open("temp_a.srt", "wb") as f: f.write(ta_f.getbuffer())
-                    with open("temp_b.srt", "wb") as f: f.write(tb_f.getbuffer())
+                    # Normalize before processing
+                    normalize_subtitle(t_f1, "clean1.srt")
+                    normalize_subtitle(t_f2, "clean2.srt")
                     
-                    out_name = f"Merged_{code}.srt"
-                    merge_subtitles("temp_a.srt", "temp_b.srt", out_name, threshold, picked_hex, color_track, s_a, s_b, s_g)
+                    if kw_b.lower() in pair[0].name.lower(): ta, tb = "clean2.srt", "clean1.srt"
+                    else: ta, tb = "clean1.srt", "clean2.srt"
                     
-                    with open(out_name, "rb") as f:
-                        st.session_state.merged_results[out_name] = f.read()
-                    
-                    for tmp in ["temp_a.srt", "temp_b.srt", out_name]:
+                    out = f"Merged_{code}.srt"
+                    merge_subtitles(ta, tb, out, thresh, hex_v, col_t, s_a, s_b, s_g)
+                    with open(out, "rb") as f: st.session_state.m_res[out] = f.read()
+                    for tmp in [t_f1, t_f2, "clean1.srt", "clean2.srt", out]:
                         if os.path.exists(tmp): os.remove(tmp)
             st.rerun()
 
-    if st.session_state.merged_results:
-        st.divider()
-        for name, data in st.session_state.merged_results.items():
-            col_n, col_d = st.columns([3, 1])
-            col_n.write(f"📄 {name}")
-            col_d.download_button("Download", data, file_name=name, key=f"dl_{name}")
+    for name, data in st.session_state.m_res.items():
+        st.download_button(f"📥 {name}", data, file_name=name)
 
 # --- TAB 2: AI TRANSLATOR ---
 with tabs[1]:
-    st.header("AI Subtitle Translation")
+    st.header("AI Translator")
+    c_a, c_l = st.columns(2)
+    url = c_a.text_input("LM Studio URL", value="http://localhost:1234/v1")
+    mod = c_a.text_input("Model ID", value="mario-sigma-lm")
+    sl, tl = c_l.text_input("From", "English"), c_l.text_input("To", "French")
+    ctx = st.text_area("Context (IMDB)")
+    file_t = st.file_uploader("Upload File", type=['srt', 'ass'])
     
-    c_api, c_lang = st.columns(2)
-    with c_api:
-        api_url = st.text_input("LM Studio URL", value="http://localhost:1234/v1")
-        model_id = st.text_input("Model ID", value="mario-sigma-lm")
-    with c_lang:
-        src_l = st.text_input("From", value="English")
-        tgt_l = st.text_input("To", value="French")
+    col1, col2 = st.columns([1, 4])
+    if col1.button("🌍 Start", type="primary") and file_t:
+        with open("raw_t.srt", "wb") as f: f.write(file_t.getbuffer())
+        normalize_subtitle("raw_t.srt", "clean_t.srt")
+        subs = pysubs2.load("clean_t.srt", encoding="utf-8")
+        bar = st.progress(0); preview = st.empty()
+        try:
+            for prog, orig, trans in translate_subs(subs, url, mod, sl, tl, ctx):
+                bar.progress(prog)
+                with preview.container():
+                    ca, cb = st.columns(2)
+                    ca.code("\n".join(orig)); cb.code("\n".join(trans))
+            st.session_state.t_res = {"n": f"AI_{file_t.name}", "d": subs.to_string(format_="srt")}
+        except Exception as e: st.error(e)
+    if col2.button("🛑 Stop"): st.stop()
+    if st.session_state.t_res:
+        st.download_button("📥 Download", st.session_state.t_res['d'], file_name=st.session_state.t_res['n'])
 
-    context = st.text_area("Context / Summary", placeholder="Enter show context to help the AI...")
-    t_file = st.file_uploader("Upload to translate", type=['srt', 'ass'], key="t_up")
-
-    col_s1, col_s2 = st.columns([1, 4])
-    if col_s1.button("🌍 Translate", type="primary"):
-        if t_file:
-            with open("temp_t.srt", "wb") as f: f.write(t_file.getbuffer())
-            # Safe load within app
-            try:
-                subs = pysubs2.load("temp_t.srt", encoding="utf-8")
-            except:
-                subs = pysubs2.load("temp_t.srt")
-            
-            p_bar = st.progress(0)
-            preview = st.empty()
-            
-            try:
-                # The translate_subs generator handles the work
-                for prog, orig, trans in translate_subs(subs, api_url, model_id, src_l, tgt_l, context):
-                    p_bar.progress(prog, text=f"Translating: {int(prog*100)}%")
-                    with preview.container():
-                        st.markdown("### 👁️ Live Monitor")
-                        ca, cb = st.columns(2)
-                        ca.info("Original"); ca.code("\n".join(orig))
-                        cb.success("AI Translated"); cb.code("\n".join(trans))
-                
-                st.session_state.translated_result = {"name": f"AI_{t_file.name}", "data": subs.to_string(format_="srt")}
-                st.success("Done!")
-            except Exception as e:
-                st.error(f"Error: {e}")
-            finally:
-                if os.path.exists("temp_t.srt"): os.remove(temp_t.srt)
-
-    if col_s2.button("🛑 Stop"):
-        st.warning("Stopping... (Script will halt on next batch)")
-        st.stop()
-
-    if st.session_state.translated_result:
-        st.download_button("📥 Download AI Sub", st.session_state.translated_result['data'], file_name=st.session_state.translated_result['name'])
-
-# --- TAB 3: QUICK SHIFT & DRIFT ---
+# --- TAB 3: QUICK SYNC ---
 with tabs[2]:
-    st.header("Quick Sync Fixer")
-    st.write("Fix simple delays or progressive drift (frame rate mismatch).")
+    st.header("Sync & Drift Fix")
+    c_s, c_d = st.columns(2)
+    sh, sp = c_s.number_input("Shift (ms)", 0, step=50), c_d.number_input("Speed Factor", 1.0, format="%.4f", step=0.001)
+    file_s = st.file_uploader("Upload to Fix", key="sync_up")
+    if st.button("⚡ Apply") and file_s:
+        with open("raw_s.srt", "wb") as f: f.write(file_s.getbuffer())
+        normalize_subtitle("raw_s.srt", "clean_s.srt")
+        subs = pysubs2.load("clean_s.srt", encoding="utf-8")
+        shift_subtitles(subs, sh, sp)
+        st.session_state.s_res = {"n": f"Fixed_{file_s.name}", "d": subs.to_string(format_="srt")}
+    if st.session_state.s_res:
+        st.download_button("📥 Download", st.session_state.s_res['d'], file_name=st.session_state.s_res['n'])
+
+# --- TAB 4: SANITIZER ---
+with tabs[3]:
+    st.header("🧼 Subtitle Sanitizer")
+    st.write("Upload any file to instantly convert it to clean UTF-8 SRT with standard formatting.")
+    clean_files = st.file_uploader("Upload Subtitles to Clean", accept_multiple_files=True, key="clean_up")
     
-    col_v1, col_v2 = st.columns(2)
-    with col_v1:
-        q_shift = st.number_input("Linear Shift (ms)", value=0, step=50)
-    with col_v2:
-        q_speed = st.number_input("Speed Factor (Drift)", value=1.0000, format="%.4f", step=0.0005)
-        st.caption("Common factors: 0.9590 (23.9 to 25) | 1.0427 (25 to 23.9)")
+    if st.button("🧼 Clean Files", type="primary"):
+        if clean_files:
+            results = {}
+            for f in clean_files:
+                with open("raw_clean.srt", "wb") as tmp: tmp.write(f.getbuffer())
+                normalize_subtitle("raw_clean.srt", "fixed.srt")
+                with open("fixed.srt", "rb") as fixed: results[f"Clean_{f.name}"] = fixed.read()
+            st.session_state.clean_res = results
+            st.rerun()
 
-    q_up = st.file_uploader("Upload file", type=['srt', 'ass'], key="q_up")
-
-    if st.button("⚡ Apply Sync Fix"):
-        if q_up:
-            with open("temp_q.srt", "wb") as f: f.write(q_up.getbuffer())
-            try:
-                subs = pysubs2.load("temp_q.srt", encoding="utf-8")
-            except:
-                subs = pysubs2.load("temp_q.srt")
-            
-            shift_subtitles(subs, q_shift, q_speed)
-            
-            st.session_state.shifted_result = {
-                "name": f"Fixed_{q_up.name}",
-                "data": subs.to_string(format_="srt")
-            }
-            if os.path.exists("temp_q.srt"): os.remove("temp_q.srt")
-            st.success("Sync parameters applied!")
-
-    if st.session_state.shifted_result:
-        st.download_button(f"📥 Download {st.session_state.shifted_result['name']}", 
-                           st.session_state.shifted_result['data'], 
-                           file_name=st.session_state.shifted_result['name'])
+    if st.session_state.clean_res:
+        st.divider()
+        for name, data in st.session_state.clean_res.items():
+            col_n, col_d = st.columns([3, 1])
+            col_n.write(f"✅ {name}")
+            col_d.download_button("Download", data, file_name=name, key=f"clean_dl_{name}")
