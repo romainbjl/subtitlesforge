@@ -1,82 +1,183 @@
 # 🎬 SubtitlesForge
 
-**SubtitlesForge** is a comprehensive, modular Python-based subtitle toolkit. It is a full-featured suite for translating, syncing, and "cleaning" subtitle files with a clean, responsive Streamlit web interface.
+A powerful, all-in-one subtitle toolkit built with Python and Streamlit. Merge dual-language subs, translate with local AI, fix timing issues, and repair encoding corruption — all through a clean web interface.
 
-## ✨ Features
+![Python](https://img.shields.io/badge/python-3.12+-blue.svg)
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
+![Streamlit](https://img.shields.io/badge/streamlit-1.30+-red.svg)
 
-### 🔗 1. Batch Merger (Dual-Language)
-Automatically pairs files using episode patterns and combines two tracks into one with custom coloring.
+## Features
+
+### 🔗 Batch Merger
+Merge dual-language subtitle files with smart episode detection and custom color coding.
+
+- Auto-pairs files by episode code (S01E01, E05, etc.)
+- Independent timing adjustments for each track
+- Customizable color coding for language distinction
+- Configurable alignment threshold (0-5000ms)
+
 ![Batch Merger Interface](https://github.com/user-attachments/assets/810b39d0-0e3f-4fbd-ba3d-5fba69f75ed7)
 
-### 🤖 2. AI Translator
-Translates subtitles via local LLMs (LM Studio) with a live side-by-side quality preview.
+### 🤖 AI Translator
+Translate subtitles using local LLMs (LM Studio, Ollama) or any OpenAI-compatible API.
+
+- Real-time side-by-side preview
+- Batch processing with adjustable sizes
+- Context-aware translation
+- Preserves formatting and timing
+
 ![AI Translator Interface](https://github.com/user-attachments/assets/1d50491d-0397-4369-9859-189fa7516cbf)
 
-### ⏱️ 3. Quick Sync & Drift Fix
-Apply global shifts or use the Drift Calculator to fix subtitles that desync over time.
+### ⏱️ Quick Sync
+Fix subtitle timing with global shifts or drift correction for progressive desync.
+
+- Simple time shift (ms precision)
+- Drift calculator for frame rate issues
+- Batch processing support
+
 ![Quick Sync Interface](https://github.com/user-attachments/assets/1bac3a5e-0698-4b1e-91f8-2309961a262a)
 
-### 🧼 4. Subtitle Sanitizer
-Standardize encodings to UTF-8, strip ads, and remove hearing-impaired tags in bulk.
+### 🧼 Sanitizer
+Clean and standardize subtitle files in bulk.
+
+- Auto UTF-8 normalization with smart encoding detection
+- Strip advertising and hearing-impaired tags
+- Batch processing with preview
+
 ![Subtitle Sanitizer Interface](https://github.com/user-attachments/assets/746138c1-ffa5-4bb5-a143-ae7b3ef488a6)
 
-## 🛠️ Tech Stack
+### 🔧 Encoding Repair Lab
+Analyze and repair corrupted subtitle files (mojibake, double-encoding, wrong codepage).
 
-**Language:** Python 3.12+
+- Detects Thai, French, Chinese, and Western European corruption
+- Multi-strategy repair algorithms
+- Detailed analysis reports with confidence scores
 
-**Package Manager:** [uv](https://github.com/astral-sh/uv)
+**Fixes common issues like:**
+- Thai: `à¸œà¸¡` → `ผม`
+- French: `Ã©` → `é`, `¶` → `ô`
+- Chinese: Garbled characters → proper Unicode
 
-**Subtitle Logic:** `pysubs2`
+## Installation
 
-**Encoding Detection:** `charset-normalizer`
+### Quick Start
 
-**Frontend:** `Streamlit`
+1. Install [uv](https://github.com/astral-sh/uv) (recommended):
 
-## 🚀 Getting Started
-### 1. Prerequisites
+```bash
+# macOS/Linux
+curl -LsSf https://astral.sh/uv/install.sh | sh
 
-Ensure you have uv installed:
+# Windows
+powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
+```
 
-    #### Windows
-    powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
+2. Clone and run:
 
-    #### macOS/Linux
-    curl -LsSf https://astral.sh/uv/install.sh | sh
+```bash
+git clone https://github.com/yourusername/SubtitlesForge.git
+cd SubtitlesForge
+uv sync
+uv run streamlit run app.py
+```
 
-### 2. Installation
+### Alternative (using pip)
 
-Clone the repository and sync the environment:
+```bash
+git clone https://github.com/yourusername/SubtitlesForge.git
+cd SubtitlesForge
+pip install -r requirements.txt  # if you generate one from pyproject.toml
+streamlit run app.py
+```
 
-    uv sync
+## Usage
 
-### 3. Running the App
+### Basic Workflow
 
-    uv run streamlit run app.py
+1. **Merger**: Upload paired subtitle files (e.g., `episode01.en.srt` + `episode01.fr.srt`)
+   - Set Track B keyword to identify which language to colorize
+   - Adjust timing if needed
+   - Download merged files
 
-## 📖 Module Breakdown
-### The Tabs
+2. **Translator**: 
+   - Start LM Studio or Ollama
+   - Enter API endpoint (default: `http://localhost:1234/v1`)
+   - Upload subs and translate
 
-**Merger:** Upload two sets of subtitles. Enter a "Track B Keyword" (e.g., FR) so the app knows which language to color and place on the bottom.
+3. **Quick Sync**:
+   - Simple delay: enter shift in ms
+   - Drift issue: use drift calculator with start/end reference points
 
-**AI Translator:** Ensure your LM Studio server is running. Paste your local URL (default: http://localhost:1234/v1) and choose your model.
+4. **Sanitizer**: Upload files → enable cleaning options → download
 
-**Quick Sync:** If a movie starts fine but ends 2 seconds late, use the Drift Calculator to find your new Speed Factor.
+5. **Repair Lab**: Upload corrupted files → analyze → repair if needed
 
-**Sanitizer:** Use this as a "pre-processor" to ensure all your files are clean UTF-8 before merging or translating.
+### Using as a Library
 
-### File Structure
+`sub_engine.py` can be imported and used standalone:
 
-    ├── app.py              # Streamlit UI & Session State management
-    ├── sub_engine.py       # Core logic (Merging, AI translation, Sanitization)
-    ├── pyproject.toml      # Dependencies (pysubs2, requests, streamlit, etc.)
-    └── README.md           # Documentation
+```python
+from sub_engine import normalize_subtitle, merge_subtitles, repair_corrupted_encoding
 
-### 🔧 Modular Logic
+# Fix encoding
+normalize_subtitle('input.srt', 'output.srt')
 
-The `sub_engine.py` is designed to be headless. You can import its functions into your own CLI scripts:
+# Merge dual-language subs
+merge_subtitles(
+    track_a='english.srt',
+    track_b='french.srt', 
+    output='merged.srt',
+    threshold=1000,
+    color_hex='#FFFF54',
+    color_track='Track B'
+)
 
-- `normalize_subtitle()`: Standardizes encoding to UTF-8.
+# Repair corrupted file
+success, corruption_type, method = repair_corrupted_encoding(
+    'corrupted.srt',
+    'repaired.srt',
+    target_script='french'
+)
+```
 
-- `translate_subs()`: A generator function for AI-based batch translation.
+## AI Translation Setup
 
-- `merge_subtitles()`: Handles the heavy lifting of timestamp matching and color injection.
+### LM Studio
+1. Download from [lmstudio.ai](https://lmstudio.ai)
+2. Load a model (Mistral 7B, Llama 3, etc.)
+3. Start local server → use `http://localhost:1234/v1`
+
+### Ollama
+```bash
+ollama serve
+# Use http://localhost:11434/v1
+```
+
+### Other APIs
+Any OpenAI-compatible endpoint works (OpenAI, Azure, custom deployments).
+
+## Tech Stack
+
+- **Python 3.12+**
+- **[uv](https://github.com/astral-sh/uv)** - Fast package management
+- **[Streamlit](https://streamlit.io)** - Web interface
+- **[pysubs2](https://github.com/tkarabela/pysubs2)** - Subtitle parsing
+- **[charset-normalizer](https://github.com/Ousret/charset_normalizer)** - Encoding detection
+
+## Troubleshooting
+
+**Garbled characters (Ã©, ¶, Ķ)?**
+→ Use Repair Lab or Sanitizer with "Fix encoding issues"
+
+**Subtitles won't merge?**
+→ Increase threshold to 2000-3000ms, verify episode codes match
+
+**AI translation fails?**
+→ Check LM Studio is running, verify API URL and model is loaded
+
+**Subs drift over time?**
+→ Use Drift Calculator instead of simple shift (likely frame rate mismatch)
+
+## Contributing
+
+Pull requests welcome! For major changes, please open an issue first.
