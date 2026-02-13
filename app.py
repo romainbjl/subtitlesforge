@@ -5,7 +5,7 @@ from sub_engine import (merge_subtitles, extract_episode_code, translate_subs,
                         shift_subtitles, normalize_subtitle, analyze_corruption, 
                         repair_corrupted_encoding)
 
-st.set_page_config(page_title="Subtitle Forge", layout="wide", page_icon="🎬")
+st.set_page_config(page_title="Subtitles Forge", layout="wide", page_icon="🎬")
 
 # Session State Initialization
 for key in ["m_res", "t_res", "s_res", "clean_res", "processing_log"]:
@@ -26,7 +26,7 @@ def safe_cleanup(file_paths):
 with st.sidebar:
     st.header("ℹ️ About")
     st.write("""
-    **Subtitle Forge** helps you:
+    **Subtitles Forge** helps you:
     - Merge dual-language subtitles
     - Translate with local AI
     - Fix sync/drift issues
@@ -58,7 +58,7 @@ with st.sidebar:
             for log_entry in st.session_state.processing_log[-10:]:  # Last 10 entries
                 st.text(log_entry)
 
-st.title("🎬 Subtitle Forge")
+st.title("🎬 Subtitles Forge")
 tabs = st.tabs(["🔗 Merger", "🤖 AI Translator", "⏱️ Quick Sync", "🧼 Sanitizer", "🔧 Repair"])
 
 # --- TAB 1: MERGER ---
