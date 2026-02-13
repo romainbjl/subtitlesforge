@@ -63,16 +63,17 @@ def normalize_subtitle(input_path: str, output_path: str) -> Tuple[str, str]:
         # Chinese subtitle
         encodings_to_try = ['utf-8', 'gb2312', 'gbk', 'big5', detected_enc]
     else:
-        # Latin/French subtitle - prioritize Western European encodings
-        encodings_to_try = ['cp1252', 'windows-1252', 'iso-8859-1', 'latin-1', detected_enc, 'utf-8', 'iso-8859-15']
+        # Latin/French subtitle - prioritize UTF-8 first (most modern files), then fallback to legacy encodings
+        encodings_to_try = ['utf-8', detected_enc, 'cp1252', 'windows-1252', 'iso-8859-1', 'latin-1', 'iso-8859-15']
     
     # Remove duplicates while preserving order
     seen = set()
     encodings_to_try = [x for x in encodings_to_try if x and x.lower() not in seen and not seen.add(x.lower())]
     
     # Corruption patterns to detect
-    # Eastern European chars that shouldn't appear in French
-    western_corruption = ['ť', 'Ť', 'ŕ', 'Ŕ', 'č', 'Č', 'ś', 'Ś', 'ř', 'Ř', 'ů', 'Ů']
+    # These patterns indicate the file was INCORRECTLY decoded/encoded
+    # Eastern European chars that shouldn't appear in French text (indicates wrong codepage)
+    western_corruption = ['ť', 'Ť', 'ŕ', 'Ŕ', 'č', 'Č', 'ś', 'Ś', 'ř', 'Ř', 'ů', 'Ů', '¶', 'Ķ', 'ķ']
     # Garbage characters that indicate Thai encoding issues
     thai_corruption = ['à¸', 'à¹', 'Ã ', 'Ã¡', 'Ã¨', 'Ã©']
     
