@@ -2,46 +2,82 @@ import pysubs2
 import re
 import requests
 import os
-from charset_normalizer import detect
 
 def normalize_subtitle(input_path, output_path):
     """
     Forcefully standardizes subtitles to UTF-8. 
-    Specifically targets the 'é' -> 'ť' corruption by prioritizing 
-    Western European maps.
+    Specifically targets French accent corruption by testing encodings
+    with validation against corruption patterns.
     """
     with open(input_path, "rb") as f:
         raw_data = f.read()
-        prediction = detect(raw_data)
-        detected_enc = prediction.get('encoding')
-        confidence = prediction.get('confidence', 0)
-
+    
+    # Try charset_normalizer first
+    try:
+        from charset_normalizer import from_bytes
+        result = from_bytes(raw_data).best()
+        if result:
+            detected_enc = str(result.encoding)
+        else:
+            detected_enc = None
+    except:
+        detected_enc = None
+    
+    # Fallback to chardet if available
+    if not detected_enc:
+        try:
+            import chardet
+            detected_enc = chardet.detect(raw_data)['encoding']
+        except:
+            detected_enc = None
+    
     # List of encodings to try in order of likelihood for French/Western subs
-    # cp1252 (Windows-1252) is the most common culprit for the 'ť' error
-    encodings_to_try = [detected_enc, 'utf-8', 'cp1252', 'latin-1', 'windows-1252']
+    # CP1252/Windows-1252 and ISO-8859-1 are the most common for French subtitles
+    encodings_to_try = ['cp1252', 'windows-1252', 'iso-8859-1', 'latin-1', detected_enc, 'utf-8', 'iso-8859-15']
+    
+    # Remove duplicates while preserving order
+    seen = set()
+    encodings_to_try = [x for x in encodings_to_try if x and x.lower() not in seen and not seen.add(x.lower())]
+    
+    # Corruption patterns to detect (Eastern European chars that shouldn't appear in French)
+    corruption_patterns = ['ť', 'Ť', 'ŕ', 'Ŕ', 'č', 'Č', 'ś', 'Ś', 'ř', 'Ř', 'ů', 'Ů']
     
     subs = None
+    best_encoding = None
+    
     for enc in encodings_to_try:
-        if not enc: continue
         try:
             subs = pysubs2.load(input_path, encoding=enc)
-            # Check if the text actually contains common corruption patterns
-            # If we see 'ť' where we expect 'é', we try the next encoding
-            test_text = "".join([l.text for l in subs[:10]])
-            if 'ť' in test_text or 'Ť' in test_text:
-                continue 
-            break # Success!
-        except:
+            
+            # Sample first 20 lines or all if fewer
+            sample_size = min(20, len(subs))
+            test_text = "".join([l.text for l in subs[:sample_size]])
+            
+            # Check for corruption patterns
+            has_corruption = any(pattern in test_text for pattern in corruption_patterns)
+            
+            # If no corruption detected, we found the right encoding
+            if not has_corruption:
+                best_encoding = enc
+                break
+        except Exception as e:
             continue
-
-    if subs is None:
-        # Final fallback
-        subs = pysubs2.load(input_path, encoding='latin-1')
-
+    
+    # If all encodings showed corruption or failed, try one more time with cp1252
+    if subs is None or best_encoding is None:
+        try:
+            subs = pysubs2.load(input_path, encoding='cp1252')
+            best_encoding = 'cp1252'
+        except:
+            # Ultimate fallback
+            subs = pysubs2.load(input_path, encoding='latin-1', errors='ignore')
+            best_encoding = 'latin-1'
+    
     # Standardize internal line breaks
     for line in subs:
         line.text = line.text.replace("\r\n", "\n").replace("\r", "\n")
-        
+    
+    # Save as UTF-8 without BOM
     subs.save(output_path, encoding="utf-8")
     return output_path
 

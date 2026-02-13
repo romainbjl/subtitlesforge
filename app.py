@@ -1,5 +1,5 @@
 import streamlit as st
-import os, zipfile, io, pysubs2
+import os, zipfile, io, pysubs2, re
 from sub_engine import merge_subtitles, extract_episode_code, translate_subs, shift_subtitles, normalize_subtitle
 
 st.set_page_config(page_title="Subtitle Forge", layout="wide", page_icon="🎬")
