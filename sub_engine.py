@@ -6,41 +6,62 @@ import os
 def normalize_subtitle(input_path, output_path):
     """
     Forcefully standardizes subtitles to UTF-8. 
-    Specifically targets French accent corruption by testing encodings
-    with validation against corruption patterns.
+    Handles multiple scripts (Latin/French, Thai, etc.) by detecting script type
+    and choosing appropriate encoding candidates.
     """
     with open(input_path, "rb") as f:
         raw_data = f.read()
     
     # Try charset_normalizer first
+    detected_enc = None
     try:
         from charset_normalizer import from_bytes
         result = from_bytes(raw_data).best()
         if result:
             detected_enc = str(result.encoding)
-        else:
-            detected_enc = None
     except:
-        detected_enc = None
+        pass
     
     # Fallback to chardet if available
     if not detected_enc:
         try:
             import chardet
-            detected_enc = chardet.detect(raw_data)['encoding']
+            detection = chardet.detect(raw_data)
+            detected_enc = detection.get('encoding')
         except:
-            detected_enc = None
+            pass
     
-    # List of encodings to try in order of likelihood for French/Western subs
-    # CP1252/Windows-1252 and ISO-8859-1 are the most common for French subtitles
-    encodings_to_try = ['cp1252', 'windows-1252', 'iso-8859-1', 'latin-1', detected_enc, 'utf-8', 'iso-8859-15']
+    # Detect script type by checking for Thai byte patterns
+    # Thai characters are in Unicode range U+0E00 to U+0E7F
+    # In UTF-8, they appear as bytes 0xE0 0xB8-0xBB
+    has_thai_bytes = any(raw_data[i:i+2] == b'\xe0\xb8' or 
+                          raw_data[i:i+2] == b'\xe0\xb9' or
+                          raw_data[i:i+2] == b'\xe0\xba' or
+                          raw_data[i:i+2] == b'\xe0\xbb'
+                          for i in range(len(raw_data) - 1))
+    
+    # Check if detected encoding suggests Thai
+    is_thai_encoding = detected_enc and ('874' in detected_enc.lower() or 
+                                          'thai' in detected_enc.lower() or
+                                          'tis' in detected_enc.lower())
+    
+    # Build encoding list based on script detection
+    if has_thai_bytes or is_thai_encoding:
+        # Thai subtitle - prioritize UTF-8 and Thai-specific encodings
+        encodings_to_try = ['utf-8', 'tis-620', 'cp874', 'iso-8859-11', detected_enc]
+    else:
+        # Latin/French subtitle - prioritize Western European encodings
+        encodings_to_try = ['cp1252', 'windows-1252', 'iso-8859-1', 'latin-1', detected_enc, 'utf-8', 'iso-8859-15']
     
     # Remove duplicates while preserving order
     seen = set()
     encodings_to_try = [x for x in encodings_to_try if x and x.lower() not in seen and not seen.add(x.lower())]
     
-    # Corruption patterns to detect (Eastern European chars that shouldn't appear in French)
-    corruption_patterns = ['ť', 'Ť', 'ŕ', 'Ŕ', 'č', 'Č', 'ś', 'Ś', 'ř', 'Ř', 'ů', 'Ů']
+    # Corruption patterns to detect
+    # Eastern European chars that shouldn't appear in French
+    western_corruption = ['ť', 'Ť', 'ŕ', 'Ŕ', 'č', 'Č', 'ś', 'Ś', 'ř', 'Ř', 'ů', 'Ů']
+    # Garbage characters that indicate Thai encoding issues
+    thai_corruption = ['à¸', 'à¹', 'Ã ', 'Ã¡', 'Ã¨', 'Ã©']
     
     subs = None
     best_encoding = None
@@ -53,8 +74,17 @@ def normalize_subtitle(input_path, output_path):
             sample_size = min(20, len(subs))
             test_text = "".join([l.text for l in subs[:sample_size]])
             
-            # Check for corruption patterns
-            has_corruption = any(pattern in test_text for pattern in corruption_patterns)
+            # Check for corruption patterns based on detected script type
+            if has_thai_bytes or is_thai_encoding:
+                has_corruption = any(pattern in test_text for pattern in thai_corruption)
+            else:
+                has_corruption = any(pattern in test_text for pattern in western_corruption)
+            
+            # Additional check: if we expect Thai but see only ASCII/Latin, it's wrong
+            if (has_thai_bytes or is_thai_encoding) and enc in ['cp1252', 'iso-8859-1', 'latin-1']:
+                has_thai_chars = any(ord(c) >= 0x0E00 and ord(c) <= 0x0E7F for c in test_text)
+                if not has_thai_chars:
+                    continue  # Skip this encoding, it lost Thai characters
             
             # If no corruption detected, we found the right encoding
             if not has_corruption:
@@ -63,15 +93,26 @@ def normalize_subtitle(input_path, output_path):
         except Exception as e:
             continue
     
-    # If all encodings showed corruption or failed, try one more time with cp1252
+    # If all encodings showed corruption or failed, use smart fallback
     if subs is None or best_encoding is None:
-        try:
-            subs = pysubs2.load(input_path, encoding='cp1252')
-            best_encoding = 'cp1252'
-        except:
-            # Ultimate fallback
-            subs = pysubs2.load(input_path, encoding='latin-1', errors='ignore')
-            best_encoding = 'latin-1'
+        if has_thai_bytes or is_thai_encoding:
+            try:
+                subs = pysubs2.load(input_path, encoding='utf-8')
+                best_encoding = 'utf-8'
+            except:
+                try:
+                    subs = pysubs2.load(input_path, encoding='tis-620')
+                    best_encoding = 'tis-620'
+                except:
+                    subs = pysubs2.load(input_path, encoding='utf-8', errors='ignore')
+                    best_encoding = 'utf-8'
+        else:
+            try:
+                subs = pysubs2.load(input_path, encoding='cp1252')
+                best_encoding = 'cp1252'
+            except:
+                subs = pysubs2.load(input_path, encoding='latin-1', errors='ignore')
+                best_encoding = 'latin-1'
     
     # Standardize internal line breaks
     for line in subs:
