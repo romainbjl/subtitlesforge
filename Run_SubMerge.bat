@@ -1,6 +1,6 @@
 @echo off
-title SubMerge Pro Launcher
-echo Starting SubMerge Pro...
+title Subtitles Forge Launcher
+echo Starting Subtitles Forge...
 echo.
 
 :: Move to the directory where this .bat file lives
