@@ -433,3 +433,212 @@ def fix_common_issues(subs) -> List[str]:
         fixes.append(f"Fixed {fixed_durations} invalid durations")
     
     return fixes
+
+
+def repair_corrupted_encoding(input_path: str, output_path: str, target_script: str = "auto") -> Tuple[bool, str, str]:
+    """
+    Attempt to repair badly corrupted subtitle files by trying multiple decoding strategies.
+    This handles double-encoding, mojibake, and other encoding disasters.
+    
+    Args:
+        input_path: Path to corrupted subtitle file
+        output_path: Where to save repaired file
+        target_script: "thai", "french", "chinese", or "auto" for auto-detection
+    
+    Returns:
+        Tuple of (success, detected_corruption_type, applied_fix)
+    """
+    with open(input_path, "rb") as f:
+        raw_data = f.read()
+    
+    # Corruption detection patterns
+    thai_mojibake = ['Ã ', 'Ã¡', 'Ã¨', 'Ã©', 'à¸', 'à¹', 'เธ', 'เน']
+    french_mojibake = ['Ã©', 'Ã¨', 'Ã', 'Ã§', 'Ãª', 'Ã´', 'Ã¹']
+    
+    corruption_type = "none"
+    applied_fix = "none"
+    
+    # Strategy 1: Check if it's double-encoded UTF-8
+    try:
+        # First decode as Latin-1 (which accepts any byte)
+        decoded_latin1 = raw_data.decode('latin-1')
+        
+        # Check for mojibake patterns
+        has_thai_mojibake = any(pattern in decoded_latin1 for pattern in thai_mojibake)
+        has_french_mojibake = any(pattern in decoded_latin1 for pattern in french_mojibake)
+        
+        if has_thai_mojibake or has_french_mojibake:
+            corruption_type = "double_encoding"
+            # Try to re-encode as Latin-1 and decode as UTF-8
+            try:
+                repaired_data = decoded_latin1.encode('latin-1').decode('utf-8')
+                
+                # Verify repair worked
+                if has_thai_mojibake:
+                    has_thai_chars = any('\u0E00' <= c <= '\u0E7F' for c in repaired_data[:500])
+                    if has_thai_chars:
+                        # Success! Save it
+                        temp_subs = pysubs2.SSAFile()
+                        temp_subs.from_string(repaired_data)
+                        temp_subs.save(output_path, encoding='utf-8')
+                        applied_fix = "repaired_thai_double_encoding"
+                        return True, corruption_type, applied_fix
+                
+                if has_french_mojibake:
+                    # Check if French characters are now correct
+                    has_french_chars = any(c in 'éèêëàâäôöùûüÿçœæ' for c in repaired_data[:500])
+                    if has_french_chars:
+                        temp_subs = pysubs2.SSAFile()
+                        temp_subs.from_string(repaired_data)
+                        temp_subs.save(output_path, encoding='utf-8')
+                        applied_fix = "repaired_french_double_encoding"
+                        return True, corruption_type, applied_fix
+                        
+            except (UnicodeDecodeError, UnicodeEncodeError):
+                pass
+    except:
+        pass
+    
+    # Strategy 2: Try all common Thai encoding combinations
+    if target_script in ["thai", "auto"]:
+        thai_repair_strategies = [
+            ('tis-620', 'utf-8'),
+            ('cp874', 'utf-8'),
+            ('windows-874', 'utf-8'),
+            ('iso-8859-11', 'utf-8'),
+        ]
+        
+        for wrong_enc, correct_enc in thai_repair_strategies:
+            try:
+                # Decode with wrong encoding, re-encode, decode with correct
+                temp_text = raw_data.decode(wrong_enc, errors='ignore')
+                repaired_data = temp_text.encode(wrong_enc).decode(correct_enc, errors='ignore')
+                
+                # Verify Thai characters present
+                if any('\u0E00' <= c <= '\u0E7F' for c in repaired_data[:500]):
+                    temp_subs = pysubs2.SSAFile()
+                    temp_subs.from_string(repaired_data)
+                    temp_subs.save(output_path, encoding='utf-8')
+                    corruption_type = "wrong_encoding"
+                    applied_fix = f"repaired_{wrong_enc}_to_{correct_enc}"
+                    return True, corruption_type, applied_fix
+            except:
+                continue
+    
+    # Strategy 3: Try all common Western European encoding combinations
+    if target_script in ["french", "auto"]:
+        western_repair_strategies = [
+            ('windows-1252', 'utf-8'),
+            ('iso-8859-1', 'utf-8'),
+            ('cp1252', 'utf-8'),
+            ('iso-8859-15', 'utf-8'),
+        ]
+        
+        for wrong_enc, correct_enc in western_repair_strategies:
+            try:
+                temp_text = raw_data.decode(wrong_enc, errors='ignore')
+                repaired_data = temp_text.encode(wrong_enc).decode(correct_enc, errors='ignore')
+                
+                # Verify French characters present
+                if any(c in 'éèêëàâäôöùûüÿçœæ' for c in repaired_data[:500]):
+                    temp_subs = pysubs2.SSAFile()
+                    temp_subs.from_string(repaired_data)
+                    temp_subs.save(output_path, encoding='utf-8')
+                    corruption_type = "wrong_encoding"
+                    applied_fix = f"repaired_{wrong_enc}_to_{correct_enc}"
+                    return True, corruption_type, applied_fix
+            except:
+                continue
+    
+    # Strategy 4: Last resort - use normalize_subtitle
+    try:
+        normalize_subtitle(input_path, output_path)
+        corruption_type = "encoding_mismatch"
+        applied_fix = "normalize_subtitle_fallback"
+        return True, corruption_type, applied_fix
+    except:
+        return False, "unrepairable", "none"
+
+
+def analyze_corruption(file_path: str) -> dict:
+    """
+    Analyze a subtitle file to detect what kind of corruption (if any) is present.
+    
+    Returns:
+        Dictionary with corruption analysis
+    """
+    try:
+        with open(file_path, "rb") as f:
+            raw_data = f.read()
+        
+        analysis = {
+            "file_size_bytes": len(raw_data),
+            "corruption_indicators": [],
+            "detected_script": "unknown",
+            "confidence": 0,
+            "recommendations": []
+        }
+        
+        # Try decoding as Latin-1 to see raw characters
+        try:
+            latin1_view = raw_data.decode('latin-1')
+            
+            # Check for Thai mojibake patterns
+            thai_mojibake = ['à¸', 'à¹', 'เธ', 'เน', 'Ã ', 'Ã¡']
+            if any(pattern in latin1_view for pattern in thai_mojibake):
+                analysis["corruption_indicators"].append("Thai mojibake (double-encoding)")
+                analysis["detected_script"] = "thai"
+                analysis["confidence"] = 80
+                analysis["recommendations"].append("Use 'Repair Corrupted Subtitles' feature with Thai target")
+            
+            # Check for French mojibake
+            french_mojibake = ['Ã©', 'Ã¨', 'Ã§', 'Ãª', 'Ã´']
+            if any(pattern in latin1_view for pattern in french_mojibake):
+                analysis["corruption_indicators"].append("French mojibake (double-encoding)")
+                analysis["detected_script"] = "french"
+                analysis["confidence"] = 80
+                analysis["recommendations"].append("Use 'Repair Corrupted Subtitles' feature with French target")
+            
+            # Check for Eastern European characters in Western text
+            eastern_chars = ['ť', 'Ť', 'ŕ', 'Ŕ', 'č', 'Č', 'ś', 'Ś']
+            if any(char in latin1_view for char in eastern_chars):
+                analysis["corruption_indicators"].append("Wrong codepage (Western text as Eastern European)")
+                analysis["detected_script"] = "french"
+                analysis["confidence"] = 70
+                analysis["recommendations"].append("Use Sanitizer with 'Fix encoding issues' enabled")
+        
+        except:
+            pass
+        
+        # Check for valid UTF-8 with actual Thai characters
+        try:
+            utf8_view = raw_data.decode('utf-8')
+            has_thai = any('\u0E00' <= c <= '\u0E7F' for c in utf8_view[:1000])
+            has_french = any(c in 'éèêëàâäôöùûüÿçœæ' for c in utf8_view[:1000])
+            
+            if has_thai:
+                analysis["detected_script"] = "thai"
+                analysis["confidence"] = 100
+                if not analysis["corruption_indicators"]:
+                    analysis["corruption_indicators"].append("None - file appears clean")
+                    analysis["recommendations"].append("No repair needed, encoding is correct")
+            
+            if has_french:
+                analysis["detected_script"] = "french"
+                analysis["confidence"] = 100
+                if not analysis["corruption_indicators"]:
+                    analysis["corruption_indicators"].append("None - file appears clean")
+                    analysis["recommendations"].append("No repair needed, encoding is correct")
+        
+        except UnicodeDecodeError:
+            analysis["corruption_indicators"].append("Not valid UTF-8")
+            analysis["recommendations"].append("File needs encoding repair")
+        
+        return analysis
+        
+    except Exception as e:
+        return {
+            "error": str(e),
+            "corruption_indicators": ["Unable to read file"],
+            "recommendations": ["Check if file is actually a subtitle file"]
+        }

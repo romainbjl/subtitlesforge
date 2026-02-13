@@ -1,7 +1,9 @@
 import streamlit as st
 import os, zipfile, io, pysubs2, re
 from pathlib import Path
-from sub_engine import merge_subtitles, extract_episode_code, translate_subs, shift_subtitles, normalize_subtitle
+from sub_engine import (merge_subtitles, extract_episode_code, translate_subs, 
+                        shift_subtitles, normalize_subtitle, analyze_corruption, 
+                        repair_corrupted_encoding)
 
 st.set_page_config(page_title="Subtitle Forge", layout="wide", page_icon="🎬")
 
@@ -57,7 +59,7 @@ with st.sidebar:
                 st.text(log_entry)
 
 st.title("🎬 Subtitle Forge")
-tabs = st.tabs(["🔗 Merger", "🤖 AI Translator", "⏱️ Quick Sync", "🧼 Sanitizer"])
+tabs = st.tabs(["🔗 Merger", "🤖 AI Translator", "⏱️ Quick Sync", "🧼 Sanitizer", "🔧 Repair"])
 
 # --- TAB 1: MERGER ---
 with tabs[0]:
@@ -249,7 +251,7 @@ with tabs[1]:
     c_a, c_l = st.columns(2)
     url = c_a.text_input("LM Studio URL", value="http://localhost:1234/v1",
                          help="OpenAI-compatible API endpoint")
-    mod = c_a.text_input("Model ID", value="openai/gpt-oss-20b",
+    mod = c_a.text_input("Model ID", value="mario-sigma-lm",
                          help="Model identifier in LM Studio")
     sl, tl = c_l.text_input("From Language", "English"), c_l.text_input("To Language", "French")
     ctx = st.text_area("Context (Optional)", placeholder="e.g., Movie title, genre, character names...",
@@ -499,3 +501,201 @@ with tabs[3]:
         if st.button("🗑️ Clear Results", key="clear_sanitizer"):
             st.session_state.clean_res = {}
             st.rerun()
+
+# --- TAB 5: REPAIR ---
+with tabs[4]:
+    st.header("🔧 Subtitle Repair Lab")
+    st.write("Analyze and repair severely corrupted subtitle files (mojibake, double-encoding, wrong codepage)")
+    
+    st.info("""
+    **When to use this tab:**
+    - Thai subtitles showing as `à¸`, `à¹`, `เธ`, `เน`
+    - French accents showing as `Ã©`, `Ã¨`, `Ã§`
+    - Text is completely garbled/unreadable
+    - File has been re-saved multiple times with wrong encoding
+    """)
+    
+    repair_mode = st.radio(
+        "Mode:",
+        ["🔍 Analyze Only", "🔧 Analyze & Repair"],
+        horizontal=True
+    )
+    
+    repair_files = st.file_uploader(
+        "Upload Corrupted Subtitles", 
+        accept_multiple_files=True, 
+        key="repair_up",
+        help="Upload subtitle files that appear corrupted"
+    )
+    
+    if repair_files:
+        st.info(f"📂 {len(repair_files)} file(s) uploaded")
+    
+    # Target script selection
+    with st.expander("⚙️ Repair Options", expanded=True):
+        target_script = st.selectbox(
+            "Target Script/Language",
+            ["auto", "thai", "french", "chinese"],
+            help="Which language are the subtitles supposed to be in?"
+        )
+    
+    if st.button("🔍 Analyze/Repair Files", type="primary", disabled=not repair_files):
+        from sub_engine import analyze_corruption, repair_corrupted_encoding
+        
+        analysis_results = {}
+        repair_results = {}
+        
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        
+        for idx, f in enumerate(repair_files):
+            status_text.text(f"Processing {f.name}... ({idx+1}/{len(repair_files)})")
+            temp_file = f"temp_corrupt_{f.name}"
+            
+            try:
+                # Save uploaded file
+                with open(temp_file, "wb") as tmp:
+                    tmp.write(f.getbuffer())
+                
+                # Analyze corruption
+                analysis = analyze_corruption(temp_file)
+                analysis_results[f.name] = analysis
+                
+                # If repair mode, attempt repair
+                if repair_mode == "🔧 Analyze & Repair":
+                    repair_output = f"repaired_{f.name}"
+                    success, corruption_type, applied_fix = repair_corrupted_encoding(
+                        temp_file, 
+                        repair_output, 
+                        target_script
+                    )
+                    
+                    if success:
+                        with open(repair_output, "rb") as repaired:
+                            repair_results[f"Repaired_{f.name}"] = repaired.read()
+                        
+                        analysis_results[f.name]["repair_status"] = "✅ Successfully repaired"
+                        analysis_results[f.name]["repair_method"] = applied_fix
+                        safe_cleanup([repair_output])
+                    else:
+                        analysis_results[f.name]["repair_status"] = "❌ Could not repair"
+                        analysis_results[f.name]["repair_method"] = "none"
+                
+            except Exception as e:
+                analysis_results[f.name] = {
+                    "error": str(e),
+                    "repair_status": "❌ Error during analysis"
+                }
+            finally:
+                safe_cleanup([temp_file])
+            
+            progress_bar.progress((idx + 1) / len(repair_files))
+        
+        status_text.success(f"✅ Completed analysis of {len(repair_files)} file(s)")
+        
+        # Display results
+        st.divider()
+        st.subheader("📊 Analysis Results")
+        
+        for filename, analysis in analysis_results.items():
+            with st.expander(f"📄 {filename}", expanded=True):
+                if "error" in analysis:
+                    st.error(f"Error: {analysis['error']}")
+                else:
+                    col1, col2, col3 = st.columns(3)
+                    
+                    with col1:
+                        st.metric("Detected Script", analysis.get("detected_script", "unknown").title())
+                    with col2:
+                        st.metric("Confidence", f"{analysis.get('confidence', 0)}%")
+                    with col3:
+                        st.metric("File Size", f"{analysis.get('file_size_bytes', 0) / 1024:.1f} KB")
+                    
+                    st.write("**Corruption Indicators:**")
+                    for indicator in analysis.get("corruption_indicators", []):
+                        if "None" in indicator:
+                            st.success(f"✓ {indicator}")
+                        else:
+                            st.warning(f"⚠️ {indicator}")
+                    
+                    st.write("**Recommendations:**")
+                    for rec in analysis.get("recommendations", []):
+                        st.info(f"💡 {rec}")
+                    
+                    if "repair_status" in analysis:
+                        st.divider()
+                        if "✅" in analysis["repair_status"]:
+                            st.success(analysis["repair_status"])
+                            st.caption(f"Method: {analysis.get('repair_method', 'unknown')}")
+                        else:
+                            st.error(analysis["repair_status"])
+        
+        # Download repaired files
+        if repair_results:
+            st.divider()
+            st.subheader("📥 Download Repaired Files")
+            
+            # Download all as ZIP
+            if len(repair_results) > 1:
+                zip_buf = io.BytesIO()
+                with zipfile.ZipFile(zip_buf, "w") as zf:
+                    for name, data in repair_results.items():
+                        zf.writestr(name, data)
+                
+                st.download_button(
+                    "📥 Download All Repaired (ZIP)",
+                    zip_buf.getvalue(),
+                    "repaired_subtitles.zip",
+                    use_container_width=True
+                )
+            
+            # Individual downloads
+            for name, data in repair_results.items():
+                col_name, col_size, col_dl = st.columns([4, 1, 1])
+                col_name.success(f"✅ {name}")
+                col_size.caption(f"{len(data) / 1024:.1f} KB")
+                col_dl.download_button("⬇️", data, file_name=name, key=f"dl_repair_{name}")
+    
+    # Add examples section
+    with st.expander("📖 Example Corruption Patterns", expanded=False):
+        st.markdown("""
+        ### Thai Corruption Examples
+        
+        **Double-encoded UTF-8:**
+        ```
+        Corrupted: à¸œà¸¡à¸Šà¸·à¹ˆà¸­à¸ˆà¸­à¸«à¹Œà¸™
+        Should be: ผมชื่อจอห์น
+        ```
+        
+        **Wrong codepage (TIS-620 as Latin-1):**
+        ```
+        Corrupted: ¼Á ª×èÍ¨Í˹Œ¹
+        Should be: ผมชื่อจอห์น
+        ```
+        
+        ### French Corruption Examples
+        
+        **Double-encoded UTF-8:**
+        ```
+        Corrupted: Ã  la maison, câ€™est très belle
+        Should be: À la maison, c'est très belle
+        ```
+        
+        **Wrong codepage (Windows-1252 as UTF-8):**
+        ```
+        Corrupted: � la maison
+        Should be: À la maison
+        ```
+        
+        ### What This Tool Can Fix
+        - ✅ Double-encoding (UTF-8 → Latin-1 → UTF-8)
+        - ✅ Wrong codepage interpretation
+        - ✅ Mojibake (garbled characters)
+        - ✅ Mixed encoding issues
+        
+        ### What It Cannot Fix
+        - ❌ Lost/deleted characters
+        - ❌ Truncated files
+        - ❌ Actual typos (wrong characters typed)
+        - ❌ 3+ layers of corruption
+        """)
