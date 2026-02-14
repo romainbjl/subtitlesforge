@@ -75,8 +75,8 @@ powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
 2. Clone and run:
 
 ```bash
-git clone https://github.com/yourusername/SubtitlesForge.git
-cd SubtitlesForge
+git clone https://github.com/romainbjl/subtitlesforge.git
+cd subtitlesforge
 uv sync
 uv run streamlit run app.py
 ```
@@ -84,8 +84,8 @@ uv run streamlit run app.py
 ### Alternative (using pip)
 
 ```bash
-git clone https://github.com/yourusername/SubtitlesForge.git
-cd SubtitlesForge
+git clone https://github.com/romainbjl/subtitlesforge.git
+cd subtitlesforge
 pip install -r requirements.txt  # if you generate one from pyproject.toml
 streamlit run app.py
 ```
