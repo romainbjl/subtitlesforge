@@ -144,7 +144,7 @@ success, corruption_type, method = repair_corrupted_encoding(
 
 ### LM Studio
 1. Download from [lmstudio.ai](https://lmstudio.ai)
-2. Load a model (Mistral 7B, Llama 3, etc.)
+2. Load a model (openai/gpt-oss-20b, Mistral 7B, Llama 3, etc.)
 3. Start local server → use `http://localhost:1234/v1`
 
 ### Ollama

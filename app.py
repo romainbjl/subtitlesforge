@@ -251,7 +251,7 @@ with tabs[1]:
     c_a, c_l = st.columns(2)
     url = c_a.text_input("LM Studio URL", value="http://localhost:1234/v1",
                          help="OpenAI-compatible API endpoint")
-    mod = c_a.text_input("Model ID", value="mario-sigma-lm",
+    mod = c_a.text_input("Model ID", value="typhoon-translate1.5-4b@q8_0",
                          help="Model identifier in LM Studio")
     sl, tl = c_l.text_input("From Language", "English"), c_l.text_input("To Language", "French")
     ctx = st.text_area("Context (Optional)", placeholder="e.g., Movie title, genre, character names...",
