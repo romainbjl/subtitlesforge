@@ -18,7 +18,7 @@ _FORMAT_PATTERN = re.compile(r"\{[^}\r\n]*\}|</?[A-Za-z][^>]*>|\\[Nn]")
 
 
 class InvalidTranslationResponse(ValueError):
-    """Raised when a model does not return every requested subtitle marker."""
+    """Raised when a model does not return every requested subtitle marker or alters formatting tokens."""
 
 
 @dataclass(frozen=True)
@@ -77,11 +77,13 @@ def _protect_formatting(text: str) -> tuple[str, dict[str, str]]:
 
 
 def _restore_formatting(text: str, replacements: dict[str, str]) -> str:
+    """Validates presence of formatting placeholders and restores original tags."""
+    missing = [ph for ph in replacements if text.count(ph) != 1]
+    if missing:
+        raise InvalidTranslationResponse(
+            f"The model altered or dropped formatting placeholder(s): {', '.join(missing)}"
+        )
     for placeholder, original in replacements.items():
-        if text.count(placeholder) != 1:
-            raise InvalidTranslationResponse(
-                f"The model changed subtitle formatting token {placeholder}"
-            )
         text = text.replace(placeholder, original)
     return text
 
@@ -263,6 +265,7 @@ def _system_prompt(
     context_info: str,
     contextual: bool,
 ) -> str:
+    """Builds system prompt with strict rules for formatting preservation."""
     if not contextual:
         prompt = f"Translate the following text into {target_lang}."
     else:
@@ -272,8 +275,18 @@ def _system_prompt(
             "translation. Preserve meaning, character voice, names, formatting tags, "
             "and intentional line breaks. Follow the requested marker format exactly."
         )
+
+    # Option 1 Fix: Explicit structural constraint rules for instruction-following models
+    prompt += (
+        "\n\nCRITICAL STRUCTURAL RULES - READ CAREFULLY:\n"
+        "1. The text contains immutable formatting placeholders formatted as `__SF_FMT_XXX__`.\n"
+        "2. You MUST NOT translate, alter, misspell, or remove these placeholders.\n"
+        "3. Every formatting placeholder in the source text MUST appear in your output "
+        "in its exact original position."
+    )
+
     if context_info.strip():
-        prompt += f" Production context: {context_info.strip()}"
+        prompt += f"\nProduction context: {context_info.strip()}"
     return prompt
 
 
@@ -285,22 +298,36 @@ def _translate_individual(
     target_lang: str,
     context_info: str,
     temperature: float,
+    max_retries: int = 3,
 ) -> str:
     protected_line, formatting = _protect_formatting(line)
     system_prompt = _system_prompt(
         source_lang, target_lang, context_info, contextual=False
     )
     if formatting:
-        system_prompt += " Preserve every SF formatting placeholder exactly."
-    translated = _request_completion(
-        base_url,
-        model,
-        system_prompt,
-        protected_line,
-        temperature,
-        1000,
-    )
-    return _restore_formatting(translated, formatting)
+        system_prompt += " Preserve every __SF_FMT_ formatting placeholder exactly."
+
+    current_prompt = protected_line
+    for attempt in range(max_retries):
+        translated = _request_completion(
+            base_url,
+            model,
+            system_prompt,
+            current_prompt,
+            temperature,
+            1000,
+        )
+        try:
+            return _restore_formatting(translated, formatting)
+        except InvalidTranslationResponse as err:
+            if attempt == max_retries - 1:
+                raise
+            # Option 3 Fix: Feed error back into retry prompt
+            current_prompt = (
+                f"{protected_line}\n\n"
+                f"ERROR ON PREVIOUS ATTEMPT: {err}\n"
+                "You MUST keep all original __SF_FMT_ placeholders intact."
+            )
 
 
 def _translate_context_group(
@@ -313,6 +340,7 @@ def _translate_context_group(
     target_lang: str,
     context_info: str,
     settings: TranslationSettings,
+    max_retries: int = 3,
 ) -> list[str]:
     prompt_lines = list(lines)
     formatting_by_index: dict[int, dict[str, str]] = {}
@@ -320,70 +348,85 @@ def _translate_context_group(
         prompt_lines[index], formatting_by_index[index] = _protect_formatting(
             lines[index]
         )
-    prompt = build_sliding_prompt(
+    base_prompt = build_sliding_prompt(
         prompt_lines,
         indices,
         translations,
         settings.previous_context,
         settings.next_context,
     )
-    try:
-        content = _request_completion(
-            base_url,
-            model,
-            _system_prompt(source_lang, target_lang, context_info, contextual=True),
-            prompt,
-            settings.temperature,
-            4000,
-        )
-        parsed = parse_marked_translations(content, indices)
-        return [
-            _restore_formatting(value, formatting_by_index[index])
-            for index, value in zip(indices, parsed)
-        ]
-    except InvalidTranslationResponse:
-        if not settings.retry_invalid:
-            raise
-        if len(indices) == 1:
-            return [
-                _translate_individual(
-                    lines[indices[0]],
-                    base_url,
-                    model,
-                    source_lang,
-                    target_lang,
-                    context_info,
-                    settings.temperature,
-                )
-            ]
 
-        midpoint = len(indices) // 2
-        left_indices, right_indices = indices[:midpoint], indices[midpoint:]
-        left = _translate_context_group(
-            lines,
-            translations,
-            left_indices,
-            base_url,
-            model,
-            source_lang,
-            target_lang,
-            context_info,
-            settings,
-        )
-        for index, value in zip(left_indices, left):
-            translations[index] = value
-        right = _translate_context_group(
-            lines,
-            translations,
-            right_indices,
-            base_url,
-            model,
-            source_lang,
-            target_lang,
-            context_info,
-            settings,
-        )
-        return left + right
+    current_prompt = base_prompt
+    last_exception = None
+
+    # Option 3 Fix: Retry loop with specific token/marker failure feedback
+    for attempt in range(max_retries):
+        try:
+            content = _request_completion(
+                base_url,
+                model,
+                _system_prompt(source_lang, target_lang, context_info, contextual=True),
+                current_prompt,
+                settings.temperature,
+                4000,
+            )
+            parsed = parse_marked_translations(content, indices)
+            return [
+                _restore_formatting(value, formatting_by_index[index])
+                for index, value in zip(indices, parsed)
+            ]
+        except InvalidTranslationResponse as err:
+            last_exception = err
+            if attempt < max_retries - 1:
+                current_prompt = (
+                    f"{base_prompt}\n\n"
+                    f"ERROR ON PREVIOUS ATTEMPT: {err}\n"
+                    "You MUST preserve all [[SF_XXXXXX]] markers and __SF_FMT_XXX__ placeholders exactly."
+                )
+
+    if not settings.retry_invalid:
+        raise last_exception or InvalidTranslationResponse("Failed context group translation")
+
+    if len(indices) == 1:
+        return [
+            _translate_individual(
+                lines[indices[0]],
+                base_url,
+                model,
+                source_lang,
+                target_lang,
+                context_info,
+                settings.temperature,
+            )
+        ]
+
+    midpoint = len(indices) // 2
+    left_indices, right_indices = indices[:midpoint], indices[midpoint:]
+    left = _translate_context_group(
+        lines,
+        translations,
+        left_indices,
+        base_url,
+        model,
+        source_lang,
+        target_lang,
+        context_info,
+        settings,
+    )
+    for index, value in zip(left_indices, left):
+        translations[index] = value
+    right = _translate_context_group(
+        lines,
+        translations,
+        right_indices,
+        base_url,
+        model,
+        source_lang,
+        target_lang,
+        context_info,
+        settings,
+    )
+    return left + right
 
 
 def _review_group(
@@ -396,6 +439,7 @@ def _review_group(
     target_lang: str,
     context_info: str,
     settings: TranslationSettings,
+    max_retries: int = 2,
 ) -> list[str]:
     prompt_translations = list(translations)
     formatting_by_index: dict[int, dict[str, str]] = {}
@@ -404,23 +448,36 @@ def _review_group(
             prompt_translations[index],
             formatting_by_index[index],
         ) = _protect_formatting(translations[index])
-    prompt = build_review_prompt(
+    base_prompt = build_review_prompt(
         lines, prompt_translations, indices, settings.consistency_context
     )
-    content = _request_completion(
-        base_url,
-        model,
-        _system_prompt(source_lang, target_lang, context_info, contextual=True)
-        + " This is a consistency review of an existing translation.",
-        prompt,
-        settings.review_temperature,
-        6000,
-    )
-    parsed = parse_marked_translations(content, indices)
-    return [
-        _restore_formatting(value, formatting_by_index[index])
-        for index, value in zip(indices, parsed)
-    ]
+
+    current_prompt = base_prompt
+    for attempt in range(max_retries):
+        try:
+            content = _request_completion(
+                base_url,
+                model,
+                _system_prompt(source_lang, target_lang, context_info, contextual=True)
+                + " This is a consistency review of an existing translation.",
+                current_prompt,
+                settings.review_temperature,
+                6000,
+            )
+            parsed = parse_marked_translations(content, indices)
+            return [
+                _restore_formatting(value, formatting_by_index[index])
+                for index, value in zip(indices, parsed)
+            ]
+        except InvalidTranslationResponse as err:
+            if attempt < max_retries - 1:
+                current_prompt = (
+                    f"{base_prompt}\n\n"
+                    f"ERROR ON PREVIOUS ATTEMPT: {err}\n"
+                    "You MUST preserve all [[SF_XXXXXX]] markers and __SF_FMT_XXX__ placeholders exactly."
+                )
+            else:
+                raise
 
 
 def translate_subs(
@@ -443,17 +500,7 @@ def translate_subs(
     consistency_context: int = 8,
     retry_invalid: bool = True,
 ) -> Iterator[tuple[float, list[str], list[str]]]:
-    """Translate subtitles with optional overlapping dialogue context.
-
-    The default quality mode translates four events while showing the model eight
-    preceding and eight following events. A second pass reviews eight translations
-    in a roughly 24-event window. Only ``line.text`` is changed; timing and styles
-    on subtitle events remain untouched.
-
-    ``batch_size`` is retained for callers of older releases. When supplied, one
-    selects individual mode and values above one select sliding mode with that group
-    size.
-    """
+    """Translate subtitles with optional overlapping dialogue context."""
     if batch_size is not None:
         if batch_size < 1:
             raise ValueError("batch_size must be at least 1")
@@ -549,8 +596,6 @@ def translate_subs(
                 TypeError,
                 requests.exceptions.RequestException,
             ):
-                # The review is deliberately non-destructive: a malformed response
-                # or transient request failure keeps the validated first-pass text.
                 reviewed = originals
             for index, value in zip(indices, reviewed):
                 final_translations[index] = value
