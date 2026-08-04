@@ -1,12 +1,23 @@
 [project]
-name = "subtitles"
+name = "subtitlesforge"
 version = "0.1.0"
-description = "Add your description here"
+description = "Streamlit toolkit for merging, translating, synchronizing, and repairing subtitles"
 readme = "README.md"
-requires-python = ">=3.14"
+requires-python = ">=3.12"
 dependencies = [
     "chardet>=5.2.0",
     "charset-normalizer>=3.4.4",
     "pysubs2>=1.8.0",
+    "requests>=2.32.0",
     "streamlit>=1.53.1",
 ]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3.0",
+    "pytest-cov>=6.0.0",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]

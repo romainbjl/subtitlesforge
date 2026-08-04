@@ -22,9 +22,11 @@ Merge dual-language subtitle files with smart episode detection and custom color
 Translate subtitles using local LLMs (LM Studio, Ollama) or any OpenAI-compatible API.
 
 - Real-time side-by-side preview
-- Batch processing with adjustable sizes
-- Context-aware translation
-- Preserves formatting and timing
+- Quality-first sliding context with adjustable dialogue groups
+- Previous accepted translations and upcoming source lines as context
+- Optional second pass for consistent tone, pronouns, terminology, and idioms
+- Validated subtitle IDs with automatic smaller-group and individual fallback
+- Preserves formatting, line breaks, segmentation, and timing
 
 ![AI Translator Interface](https://github.com/user-attachments/assets/1d50491d-0397-4369-9859-189fa7516cbf)
 
@@ -78,7 +80,7 @@ powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
 git clone https://github.com/romainbjl/subtitlesforge.git
 cd subtitlesforge
 uv sync
-uv run streamlit run app.py
+uv run python main.py
 ```
 
 ### Alternative (using pip)
@@ -86,8 +88,8 @@ uv run streamlit run app.py
 ```bash
 git clone https://github.com/romainbjl/subtitlesforge.git
 cd subtitlesforge
-pip install -r requirements.txt  # if you generate one from pyproject.toml
-streamlit run app.py
+python -m pip install .
+python main.py
 ```
 
 ## Usage
@@ -102,6 +104,8 @@ streamlit run app.py
 2. **Translator**: 
    - Start LM Studio or Ollama
    - Enter API endpoint (default: `http://localhost:1234/v1`)
+   - Keep **Contextual sliding window** selected for the best dialogue quality
+   - Optionally describe the movie, genre, tone, and character names
    - Upload subs and translate
 
 3. **Quick Sync**:
@@ -124,10 +128,10 @@ normalize_subtitle('input.srt', 'output.srt')
 
 # Merge dual-language subs
 merge_subtitles(
-    track_a='english.srt',
-    track_b='french.srt', 
-    output='merged.srt',
-    threshold=1000,
+    path_a='english.srt',
+    path_b='french.srt',
+    output_path='merged.srt',
+    threshold_ms=1000,
     color_hex='#FFFF54',
     color_track='Track B'
 )
@@ -140,7 +144,64 @@ success, corruption_type, method = repair_corrupted_encoding(
 )
 ```
 
+Repair output is parsed and validated before being saved. A successful repair
+therefore always contains at least one non-empty subtitle entry.
+
+Context-aware translation is also available as a library generator:
+
+```python
+import pysubs2
+from sub_engine import translate_subs
+
+subs = pysubs2.load("episode.srt", encoding="utf-8")
+for progress, source, translated in translate_subs(
+    subs,
+    "http://localhost:1234/v1",
+    "typhoon-translate1.5-4b@q8_0",
+    "English",
+    "French",
+    context_info="A dry comedy; keep character names unchanged.",
+    group_size=4,
+    previous_context=8,
+    next_context=8,
+    temperature=0.4,
+    review_temperature=0.3,
+    consistency_pass=True,
+):
+    print(f"{progress:.0%}", source, translated)
+
+subs.save("translated.srt", encoding="utf-8")
+```
+
+### Running tests
+
+```bash
+uv sync --group dev
+uv run pytest
+```
+
 ## AI Translation Setup
+
+### Recommended quality settings
+
+The default contextual mode translates four subtitle events at a time. It gives
+the model eight earlier events (including accepted translations) and eight future
+source events as read-only context. The optional consistency pass then reviews
+eight translations inside a window of up to 24 dialogue events.
+
+The initial translation uses temperature `0.4` by default for more natural,
+idiomatic dialogue. The consistency review uses a more conservative `0.3` to
+keep corrections focused and structurally reliable. Both values are adjustable
+in the interface.
+
+Every translated event uses a stable ID. If the model omits or changes an ID, the
+request is automatically retried with smaller groups and finally as an individual
+subtitle. A malformed consistency review is discarded, leaving the validated
+first-pass translation unchanged.
+
+Individual mode remains available for narrowly fine-tuned models that cannot
+follow structured prompts. It is faster but provides no dialogue context or
+consistency review.
 
 ### LM Studio
 1. Download from [lmstudio.ai](https://lmstudio.ai)

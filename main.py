@@ -1,6 +1,20 @@
-def main():
-    print("Hello from subtitles!")
+"""Convenient Python entry point for launching SubtitlesForge."""
+
+from __future__ import annotations
+
+import subprocess
+import sys
+from pathlib import Path
+
+
+def main() -> int:
+    app_path = Path(__file__).with_name("app.py")
+    completed = subprocess.run(
+        [sys.executable, "-m", "streamlit", "run", str(app_path)],
+        check=False,
+    )
+    return completed.returncode
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

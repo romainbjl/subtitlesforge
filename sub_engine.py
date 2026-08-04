@@ -1,8 +1,13 @@
-import pysubs2
-import re
-import requests
 import os
-from typing import Tuple, Optional, List
+import re
+import tempfile
+from pathlib import Path
+from typing import Tuple, List
+
+import pysubs2
+from pysubs2.exceptions import Pysubs2Error
+
+from translation_engine import translate_subs
 
 
 def normalize_subtitle(input_path: str, output_path: str) -> Tuple[str, str]:
@@ -24,7 +29,7 @@ def normalize_subtitle(input_path: str, output_path: str) -> Tuple[str, str]:
         result = from_bytes(raw_data).best()
         if result:
             detected_enc = str(result.encoding)
-    except:
+    except (ImportError, TypeError, ValueError):
         pass
 
     # Fallback to chardet if available
@@ -33,7 +38,7 @@ def normalize_subtitle(input_path: str, output_path: str) -> Tuple[str, str]:
             import chardet
             detection = chardet.detect(raw_data)
             detected_enc = detection.get('encoding')
-        except:
+        except (ImportError, TypeError, ValueError):
             pass
 
     # Detect script type by checking for Thai byte patterns
@@ -107,7 +112,7 @@ def normalize_subtitle(input_path: str, output_path: str) -> Tuple[str, str]:
                 best_encoding = enc
                 break
 
-        except Exception as e:
+        except (OSError, UnicodeError, LookupError, Pysubs2Error):
             continue
 
     # If all encodings showed corruption or failed, use smart fallback
@@ -116,19 +121,15 @@ def normalize_subtitle(input_path: str, output_path: str) -> Tuple[str, str]:
             try:
                 subs = pysubs2.load(input_path, encoding='utf-8')
                 best_encoding = 'utf-8'
-            except:
-                try:
-                    subs = pysubs2.load(input_path, encoding='tis-620')
-                    best_encoding = 'tis-620'
-                except:
-                    subs = pysubs2.load(input_path, encoding='utf-8', errors='ignore')
-                    best_encoding = 'utf-8'
+            except (OSError, UnicodeError, LookupError, Pysubs2Error):
+                subs = pysubs2.load(input_path, encoding='tis-620')
+                best_encoding = 'tis-620'
         else:
             try:
                 subs = pysubs2.load(input_path, encoding='cp1252')
                 best_encoding = 'cp1252'
-            except:
-                subs = pysubs2.load(input_path, encoding='latin-1', errors='ignore')
+            except (OSError, UnicodeError, LookupError, Pysubs2Error):
+                subs = pysubs2.load(input_path, encoding='latin-1')
                 best_encoding = 'latin-1'
 
     # Standardize internal line breaks
@@ -172,124 +173,8 @@ def validate_subtitle_file(file_path: str) -> Tuple[bool, str]:
 
         return True, f"Valid subtitle file ({len(subs)} entries)"
 
-    except Exception as e:
-        return False, f"Parse error: {str(e)}"
-
-
-def translate_subs(subs, base_url, model, source_lang, target_lang, context_info="", batch_size=1):
-    """
-    Translate subtitles using a local LLM API.
-
-    Tuned for narrowly fine-tuned translation models (e.g. Typhoon Translate 1.5),
-    which expect a minimal system prompt ("Translate the following text into X.")
-    and the raw source text as the user turn -- not a multi-instruction prompt.
-
-    Because these models are trained on single-segment translation rather than
-    batched multi-line requests, batch_size defaults to 1 (one subtitle line per
-    request). You can raise batch_size for speed with general-purpose chat models
-    that reliably honor a "---"-separated batch format, but for translation-specific
-    models like Typhoon Translate, batch_size=1 is the safest and most reliable.
-
-    Note on timestamps: this function only ever touches line.text. Timing
-    (line.start / line.end) is never read or modified here, so translation
-    has no effect on subtitle sync -- each translated string is written back
-    into the same subtitle event, in place, at the very end.
-
-    Args:
-        subs: pysubs2.SSAFile object
-        base_url: OpenAI-compatible API base URL (e.g. http://localhost:1234/v1)
-        model: model identifier as loaded in LM Studio / Ollama
-        source_lang: source language name (e.g. "English")
-        target_lang: target language name (e.g. "Thai")
-        context_info: optional free-text context to steer translation style/tone,
-            e.g. "This is a sci-fi movie. Use a formal tone. Keep character
-            names untranslated." Folded into the system prompt, since that's
-            the single instruction slot these translation-tuned models
-            reliably respect.
-        batch_size: number of subtitle lines translated per API call.
-            Defaults to 1 -- see note above.
-
-    Yields:
-        Progress updates: (progress_float, original_lines, translated_lines)
-    """
-    lines = [line.text for line in subs]
-    translated_lines = []
-
-    # Minimal, model-friendly system prompt. Translation-specific models like
-    # Typhoon Translate are trained on exactly this single-sentence instruction
-    # shape -- extra framing ("You are a professional translator...", lists of
-    # requirements, etc.) is out-of-distribution for them and can degrade or
-    # break output entirely.
-    system_content = f"Translate the following text into {target_lang}."
-    if context_info:
-        system_content += f" {context_info.strip()}"
-
-    for i in range(0, len(lines), batch_size):
-        batch = lines[i:i + batch_size]
-
-        if batch_size == 1:
-            # Single-line mode: send the raw subtitle text directly, no
-            # separators, no task description -- matches how translation-
-            # specific models were fine-tuned.
-            user_content = batch[0]
-        else:
-            # Batched mode: only reliable with general-purpose chat models
-            # that can follow the "---"-separated format. Test carefully
-            # before relying on this with a narrow translation model.
-            user_content = "\n---\n".join(batch)
-
-        try:
-            response = requests.post(
-                f"{base_url}/chat/completions",
-                json={
-                    "model": model,
-                    "messages": [
-                        {"role": "system", "content": system_content},
-                        {"role": "user", "content": user_content}
-                    ],
-                    "temperature": 0.3,
-                    "max_tokens": 500 if batch_size == 1 else 2000
-                },
-                timeout=60
-            )
-            result = response.json()['choices'][0]['message']['content']
-
-            # Clean up common artifacts
-            result = result.replace('```', '').strip()
-
-            if batch_size == 1:
-                translated_batch = [result.strip()]
-            else:
-                # Split by separator
-                translated_batch = [line.strip() for line in result.split("\n---\n")]
-
-                # Verify we got the right number of translations
-                if len(translated_batch) != len(batch):
-                    # Fallback: try splitting by newlines
-                    translated_batch = [line.strip() for line in result.split("\n") if line.strip()]
-
-                # If still mismatched, pad or truncate
-                if len(translated_batch) < len(batch):
-                    translated_batch.extend([f"[Translation missing]"] * (len(batch) - len(translated_batch)))
-                elif len(translated_batch) > len(batch):
-                    translated_batch = translated_batch[:len(batch)]
-
-        except requests.exceptions.Timeout:
-            translated_batch = [f"[Timeout] {line}" for line in batch]
-        except requests.exceptions.ConnectionError:
-            translated_batch = [f"[Connection Error] {line}" for line in batch]
-        except Exception as e:
-            translated_batch = [f"[Error: {str(e)[:50]}] {line}" for line in batch]
-
-        translated_lines.extend(translated_batch)
-        yield (i + len(batch)) / len(lines), batch, translated_batch
-
-    # Apply translations to subtitle objects.
-    # Only .text is modified -- .start / .end (timestamps) are left exactly
-    # as they were, so timing/sync is unaffected by translation.
-    for i, line in enumerate(subs):
-        if i < len(translated_lines):
-            line.text = translated_lines[i]
+    except (OSError, UnicodeError, ValueError, Pysubs2Error) as error:
+        return False, f"Parse error: {error}"
 
 
 def extract_episode_code(filename: str) -> str:
@@ -478,6 +363,111 @@ def fix_common_issues(subs) -> List[str]:
     return fixes
 
 
+def _save_repaired_subtitles(repaired_text: str, output_path: str) -> int:
+    """Parse, validate, and atomically save repaired subtitle text."""
+    subtitles = pysubs2.SSAFile.from_string(repaired_text)
+    if not subtitles:
+        raise ValueError("Repair produced no subtitle entries")
+    if not any(event.text.strip() for event in subtitles):
+        raise ValueError("Repair produced subtitle entries without text")
+
+    destination = Path(output_path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            dir=destination.parent,
+            prefix=f".{destination.stem}-",
+            suffix=destination.suffix or ".srt",
+            delete=False,
+        ) as temporary:
+            temporary_path = Path(temporary.name)
+
+        subtitles.save(str(temporary_path), encoding="utf-8")
+        if temporary_path.stat().st_size == 0:
+            raise ValueError("Repair produced an empty subtitle file")
+
+        reloaded = pysubs2.load(str(temporary_path), encoding="utf-8")
+        if not reloaded:
+            raise ValueError("Saved repair contains no subtitle entries")
+
+        os.replace(temporary_path, destination)
+        temporary_path = None
+        return len(reloaded)
+    finally:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
+
+
+def _contains_script(text: str, script: str) -> bool:
+    sample = text[:5000]
+    if script == "thai":
+        return any("\u0E00" <= character <= "\u0E7F" for character in sample)
+    if script == "french":
+        return any(character in "éèêëàâäôöùûüÿçœæÉÈÊËÀÂÄÔÖÙÛÜŸÇŒÆ" for character in sample)
+    if script == "chinese":
+        return any("\u3400" <= character <= "\u9FFF" for character in sample)
+    return False
+
+
+def _detect_target_script(raw_data: bytes) -> str:
+    """Infer the intended script conservatively for automatic repair."""
+    decoded_views = []
+    for encoding in ("utf-8-sig", "cp1252", "latin-1"):
+        try:
+            decoded_views.append(raw_data.decode(encoding))
+        except UnicodeDecodeError:
+            continue
+
+    for script in ("thai", "chinese", "french"):
+        if any(_contains_script(view, script) for view in decoded_views):
+            return script
+
+    try:
+        import chardet
+
+        encoding = (chardet.detect(raw_data).get("encoding") or "").lower()
+        if any(value in encoding for value in ("874", "tis-620", "thai")):
+            return "thai"
+        if any(value in encoding for value in ("1252", "8859-1", "latin")):
+            return "french"
+        if any(value in encoding for value in ("gb", "big5", "chinese")):
+            return "chinese"
+    except (ImportError, TypeError, ValueError):
+        pass
+    return "unknown"
+
+
+def _mojibake_score(text: str) -> int:
+    markers = ("Ã", "Â", "â€", "à¸", "à¹", "�")
+    return sum(text.count(marker) for marker in markers)
+
+
+def _iter_mojibake_repairs(raw_data: bytes):
+    """Yield strictly reversible UTF-8 mojibake repair candidates."""
+    seen = set()
+    for initial_encoding in ("utf-8-sig", "cp1252", "latin-1"):
+        try:
+            initial = raw_data.decode(initial_encoding)
+        except UnicodeDecodeError:
+            continue
+
+        for source_encoding in ("latin-1", "cp1252"):
+            current = initial
+            for depth in (1, 2):
+                try:
+                    candidate = current.encode(source_encoding).decode("utf-8")
+                except (UnicodeEncodeError, UnicodeDecodeError):
+                    break
+                if candidate == current:
+                    break
+                key = (source_encoding, candidate)
+                if key not in seen and _mojibake_score(candidate) < _mojibake_score(current):
+                    seen.add(key)
+                    yield f"{initial_encoding}_{source_encoding}_pass{depth}", candidate
+                current = candidate
+
+
 def repair_corrupted_encoding(input_path: str, output_path: str, target_script: str = "auto") -> Tuple[bool, str, str]:
     """
     Attempt to repair badly corrupted subtitle files by trying multiple decoding strategies.
@@ -494,193 +484,154 @@ def repair_corrupted_encoding(input_path: str, output_path: str, target_script: 
     with open(input_path, "rb") as f:
         raw_data = f.read()
 
-    # Corruption detection patterns
-    thai_mojibake = ['Ã ', 'Ã¡', 'Ã¨', 'Ã©', 'à¸', 'à¹', 'เธ', 'เน']
-    french_mojibake = ['Ã©', 'Ã¨', 'Ã', 'Ã§', 'Ãª', 'Ã´', 'Ã¹']
+    if not raw_data:
+        return False, "empty_input", "none"
+    if target_script not in {"auto", "thai", "french", "chinese"}:
+        raise ValueError(f"Unsupported target script: {target_script}")
+    effective_target = (
+        _detect_target_script(raw_data) if target_script == "auto" else target_script
+    )
 
     corruption_type = "none"
     applied_fix = "none"
 
-    # Strategy 1: Check if it's double-encoded UTF-8
-    try:
-        # First decode as Latin-1 (which accepts any byte)
-        decoded_latin1 = raw_data.decode('latin-1')
-
-        # Check for mojibake patterns
-        has_thai_mojibake = any(pattern in decoded_latin1 for pattern in thai_mojibake)
-        has_french_mojibake = any(pattern in decoded_latin1 for pattern in french_mojibake)
-
-        if has_thai_mojibake or has_french_mojibake:
-            corruption_type = "double_encoding"
-
-            # Try to re-encode as Latin-1 and decode as UTF-8
+    # Strategy 1: Undo one or two reversible UTF-8 mojibake passes.
+    for method, repaired_data in _iter_mojibake_repairs(raw_data):
+        repaired_script = effective_target
+        if repaired_script == "unknown":
+            repaired_script = next(
+                (
+                    script
+                    for script in ("thai", "chinese", "french")
+                    if _contains_script(repaired_data, script)
+                ),
+                "unknown",
+            )
+        if repaired_script != "unknown" and _contains_script(repaired_data, repaired_script):
             try:
-                repaired_data = decoded_latin1.encode('latin-1').decode('utf-8')
-
-                # Verify repair worked
-                if has_thai_mojibake:
-                    has_thai_chars = any('\u0E00' <= c <= '\u0E7F' for c in repaired_data[:500])
-                    if has_thai_chars:
-                        # Success! Save it
-                        temp_subs = pysubs2.SSAFile()
-                        temp_subs.from_string(repaired_data)
-                        temp_subs.save(output_path, encoding='utf-8')
-                        applied_fix = "repaired_thai_double_encoding"
-                        return True, corruption_type, applied_fix
-
-                if has_french_mojibake:
-                    # Check if French characters are now correct
-                    has_french_chars = any(c in 'éèêëàâäôöùûüÿçœæ' for c in repaired_data[:500])
-                    if has_french_chars:
-                        temp_subs = pysubs2.SSAFile()
-                        temp_subs.from_string(repaired_data)
-                        temp_subs.save(output_path, encoding='utf-8')
-                        applied_fix = "repaired_french_double_encoding"
-                        return True, corruption_type, applied_fix
-
-            except (UnicodeDecodeError, UnicodeEncodeError):
-                pass
-    except:
-        pass
+                _save_repaired_subtitles(repaired_data, output_path)
+            except (ValueError, Pysubs2Error):
+                continue
+            return True, "double_encoding", f"repaired_{repaired_script}_{method}"
 
     # Strategy 2: Try all common Thai encoding combinations
-    if target_script in ["thai", "auto"]:
-        thai_repair_strategies = [
-            ('tis-620', 'utf-8'),
-            ('cp874', 'utf-8'),
-            ('windows-874', 'utf-8'),
-            ('iso-8859-11', 'utf-8'),
-        ]
-
-        for wrong_enc, correct_enc in thai_repair_strategies:
+    if effective_target == "thai":
+        for encoding in ("tis-620", "cp874", "iso-8859-11"):
             try:
-                # Decode with wrong encoding, re-encode, decode with correct
-                temp_text = raw_data.decode(wrong_enc, errors='ignore')
-                repaired_data = temp_text.encode(wrong_enc).decode(correct_enc, errors='ignore')
+                # Decode the original bytes directly with the candidate legacy
+                # encoding. Re-encoding and decoding as UTF-8 would simply
+                # recreate the original bytes and can silently discard text.
+                repaired_data = raw_data.decode(encoding)
 
                 # Verify Thai characters present
                 if any('\u0E00' <= c <= '\u0E7F' for c in repaired_data[:500]):
-                    temp_subs = pysubs2.SSAFile()
-                    temp_subs.from_string(repaired_data)
-                    temp_subs.save(output_path, encoding='utf-8')
+                    _save_repaired_subtitles(repaired_data, output_path)
                     corruption_type = "wrong_encoding"
-                    applied_fix = f"repaired_{wrong_enc}_to_{correct_enc}"
+                    applied_fix = f"decoded_{encoding}"
                     return True, corruption_type, applied_fix
-            except:
+            except (LookupError, UnicodeDecodeError, ValueError, Pysubs2Error):
                 continue
 
     # Strategy 3: Try all common Western European encoding combinations
-    if target_script in ["french", "auto"]:
-        western_repair_strategies = [
-            ('windows-1252', 'utf-8'),
-            ('iso-8859-1', 'utf-8'),
-            ('cp1252', 'utf-8'),
-            ('iso-8859-15', 'utf-8'),
-        ]
-
-        for wrong_enc, correct_enc in western_repair_strategies:
+    if effective_target == "french":
+        for encoding in ("cp1252", "iso-8859-15", "latin-1"):
             try:
-                temp_text = raw_data.decode(wrong_enc, errors='ignore')
-                repaired_data = temp_text.encode(wrong_enc).decode(correct_enc, errors='ignore')
+                repaired_data = raw_data.decode(encoding)
 
                 # Verify French characters present
                 if any(c in 'éèêëàâäôöùûüÿçœæ' for c in repaired_data[:500]):
-                    temp_subs = pysubs2.SSAFile()
-                    temp_subs.from_string(repaired_data)
-                    temp_subs.save(output_path, encoding='utf-8')
+                    _save_repaired_subtitles(repaired_data, output_path)
                     corruption_type = "wrong_encoding"
-                    applied_fix = f"repaired_{wrong_enc}_to_{correct_enc}"
+                    applied_fix = f"decoded_{encoding}"
                     return True, corruption_type, applied_fix
-            except:
+            except (LookupError, UnicodeDecodeError, ValueError, Pysubs2Error):
                 continue
 
-    # Strategy 4: Last resort - use normalize_subtitle
+    # Strategy 4: Decode common Chinese legacy encodings strictly.
+    if effective_target == "chinese":
+        for encoding in ("gb18030", "big5", "gbk"):
+            try:
+                repaired_data = raw_data.decode(encoding)
+                if _contains_script(repaired_data, "chinese"):
+                    _save_repaired_subtitles(repaired_data, output_path)
+                    return True, "wrong_encoding", f"decoded_{encoding}"
+            except (LookupError, UnicodeDecodeError, ValueError, Pysubs2Error):
+                continue
+
+    # Strategy 5: Last resort - use the general normalizer.
     try:
         normalize_subtitle(input_path, output_path)
+        valid, validation_message = validate_subtitle_file(output_path)
+        if not valid or Path(output_path).stat().st_size == 0:
+            raise ValueError(validation_message)
         corruption_type = "encoding_mismatch"
         applied_fix = "normalize_subtitle_fallback"
         return True, corruption_type, applied_fix
-    except:
+    except (OSError, UnicodeError, ValueError, Pysubs2Error):
         return False, "unrepairable", "none"
 
 
 def analyze_corruption(file_path: str) -> dict:
-    """
-    Analyze a subtitle file to detect what kind of corruption (if any) is present.
-
-    Returns:
-        Dictionary with corruption analysis
-    """
+    """Analyze encoding, likely script, mojibake, and subtitle structure."""
     try:
-        with open(file_path, "rb") as f:
-            raw_data = f.read()
-
-        analysis = {
-            "file_size_bytes": len(raw_data),
-            "corruption_indicators": [],
-            "detected_script": "unknown",
-            "confidence": 0,
-            "recommendations": []
+        raw_data = Path(file_path).read_bytes()
+    except OSError as error:
+        return {
+            "error": str(error),
+            "corruption_indicators": ["Unable to read file"],
+            "recommendations": ["Check if the file is accessible"],
         }
 
-        # Try decoding as Latin-1 to see raw characters
-        try:
-            latin1_view = raw_data.decode('latin-1')
-
-            # Check for Thai mojibake patterns
-            thai_mojibake = ['à¸', 'à¹', 'เธ', 'เน', 'Ã ', 'Ã¡']
-            if any(pattern in latin1_view for pattern in thai_mojibake):
-                analysis["corruption_indicators"].append("Thai mojibake (double-encoding)")
-                analysis["detected_script"] = "thai"
-                analysis["confidence"] = 80
-                analysis["recommendations"].append("Use 'Repair Corrupted Subtitles' feature with Thai target")
-
-            # Check for French mojibake
-            french_mojibake = ['Ã©', 'Ã¨', 'Ã§', 'Ãª', 'Ã´']
-            if any(pattern in latin1_view for pattern in french_mojibake):
-                analysis["corruption_indicators"].append("French mojibake (double-encoding)")
-                analysis["detected_script"] = "french"
-                analysis["confidence"] = 80
-                analysis["recommendations"].append("Use 'Repair Corrupted Subtitles' feature with French target")
-
-            # Check for Eastern European characters in Western text
-            eastern_chars = ['ť', 'Ť', 'ŕ', 'Ŕ', 'č', 'Č', 'ś', 'Ś']
-            if any(char in latin1_view for char in eastern_chars):
-                analysis["corruption_indicators"].append("Wrong codepage (Western text as Eastern European)")
-                analysis["detected_script"] = "french"
-                analysis["confidence"] = 70
-                analysis["recommendations"].append("Use Sanitizer with 'Fix encoding issues' enabled")
-        except:
-            pass
-
-        # Check for valid UTF-8 with actual Thai characters
-        try:
-            utf8_view = raw_data.decode('utf-8')
-            has_thai = any('\u0E00' <= c <= '\u0E7F' for c in utf8_view[:1000])
-            has_french = any(c in 'éèêëàâäôöùûüÿçœæ' for c in utf8_view[:1000])
-
-            if has_thai:
-                analysis["detected_script"] = "thai"
-                analysis["confidence"] = 100
-                if not analysis["corruption_indicators"]:
-                    analysis["corruption_indicators"].append("None - file appears clean")
-                    analysis["recommendations"].append("No repair needed, encoding is correct")
-
-            if has_french:
-                analysis["detected_script"] = "french"
-                analysis["confidence"] = 100
-                if not analysis["corruption_indicators"]:
-                    analysis["corruption_indicators"].append("None - file appears clean")
-                    analysis["recommendations"].append("No repair needed, encoding is correct")
-        except UnicodeDecodeError:
-            analysis["corruption_indicators"].append("Not valid UTF-8")
-            analysis["recommendations"].append("File needs encoding repair")
-
+    analysis = {
+        "file_size_bytes": len(raw_data),
+        "corruption_indicators": [],
+        "detected_script": _detect_target_script(raw_data),
+        "detected_encoding": "unknown",
+        "confidence": 0,
+        "recommendations": [],
+    }
+    if not raw_data:
+        analysis["error"] = "File is empty"
+        analysis["corruption_indicators"].append("Empty input")
+        analysis["recommendations"].append("Upload a non-empty subtitle file")
         return analysis
 
-    except Exception as e:
-        return {
-            "error": str(e),
-            "corruption_indicators": ["Unable to read file"],
-            "recommendations": ["Check if file is actually a subtitle file"]
-        }
+    try:
+        from charset_normalizer import from_bytes
+
+        match = from_bytes(raw_data).best()
+        if match is not None:
+            analysis["detected_encoding"] = str(match.encoding or "unknown")
+    except (ImportError, TypeError, ValueError):
+        pass
+
+    try:
+        utf8_view = raw_data.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        analysis["corruption_indicators"].append("Not valid UTF-8")
+        analysis["recommendations"].append("Decode and save the file as UTF-8")
+        analysis["confidence"] = 70 if analysis["detected_script"] != "unknown" else 40
+        return analysis
+
+    analysis["detected_encoding"] = "utf-8"
+    if _mojibake_score(utf8_view) > 0:
+        analysis["corruption_indicators"].append("Likely UTF-8 mojibake")
+        analysis["recommendations"].append("Run Analyze & Repair")
+        analysis["confidence"] = 85
+    else:
+        analysis["corruption_indicators"].append("None - file appears clean")
+        analysis["recommendations"].append("No encoding repair is needed")
+        analysis["confidence"] = 100
+
+    try:
+        subtitles = pysubs2.SSAFile.from_string(utf8_view)
+        analysis["subtitle_entries"] = len(subtitles)
+        if not subtitles:
+            analysis["corruption_indicators"].append("No subtitle entries detected")
+            analysis["recommendations"].append("Verify the subtitle format")
+    except Pysubs2Error as error:
+        analysis["subtitle_entries"] = 0
+        analysis["corruption_indicators"].append("Subtitle format could not be parsed")
+        analysis["recommendations"].append(str(error))
+
+    return analysis
